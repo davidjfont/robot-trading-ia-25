@@ -1,0 +1,99 @@
+# ============================================
+# Sistema Autónomo de Trading con Agentes IA
+# Configuración de Ejemplo
+# ============================================
+# 
+# INSTRUCCIONES:
+# 1. Copia este archivo a config.yaml
+# 2. Rellena tus credenciales reales
+# 3. NO subas config.yaml a Git (está en .gitignore)
+
+# Configuración de MetaTrader 5
+mt5:
+  account: 12345678  # Tu número de cuenta MT5
+  password: "TU_PASSWORD_AQUI"  # Tu contraseña
+  server: "TuBroker-Demo"  # Servidor de tu broker
+  timeout: 60000
+  demo_mode: true  # SIEMPRE true para pruebas
+
+# Símbolos a tradear
+symbols:
+  - symbol: "EURUSD"
+    enabled: true
+    max_lot: 0.1
+    spread_max: 20
+  - symbol: "GBPUSD"
+    enabled: true
+    max_lot: 0.1
+    spread_max: 25
+  - symbol: "USDJPY"
+    enabled: false
+    max_lot: 0.1
+    spread_max: 20
+
+# Configuración de LLM Local
+llm:
+  provider: "ollama"
+  model: "mistral"
+  base_url: "http://localhost:11434"
+  temperature: 0.3
+  max_tokens: 500
+  timeout: 120
+
+# Gestión de Riesgo
+risk:
+  max_daily_loss_percent: 2.0
+  max_position_size: 0.1
+  max_open_positions: 3
+  default_sl_pips: 50
+  default_tp_pips: 100
+  risk_per_trade_percent: 1.0
+
+# Configuración de Scraping
+scraping:
+  interval_minutes: 15
+  sources:
+    - name: "investing"
+      url: "https://www.investing.com/news/forex-news"
+      enabled: true
+    - name: "forexfactory"
+      url: "https://www.forexfactory.com/calendar"
+      enabled: true
+  user_agents:
+    - "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+
+# Estrategia
+strategy:
+  timeframe: "M15"
+  weights:
+    technical: 0.4
+    sentiment: 0.3
+    news: 0.3
+  signal_threshold: 0.5
+
+# Base de datos
+database:
+  path: "data/trading.db"
+
+# Logging
+logging:
+  level: "INFO"
+  file: "data/logs/trading.log"
+  max_size_mb: 10
+  backup_count: 5
+
+# Dashboard
+dashboard:
+  port: 8501
+  refresh_seconds: 5
+
+# Notificaciones (Telegram)
+notifications:
+  telegram:
+    enabled: false
+    bot_token: "TU_BOT_TOKEN_AQUI"
+    chat_id: "TU_CHAT_ID_AQUI"
+    notify_trades: true
+    notify_signals: true
+    daily_summary: true
+    daily_summary_hour: 22
