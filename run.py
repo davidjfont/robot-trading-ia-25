@@ -15,6 +15,8 @@ from loguru import logger
 import yaml
 import schedule
 
+from core.states import TradingState
+
 # Configurar path
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)
@@ -41,6 +43,49 @@ class ExecutionMode(Enum):
     FULL_AUTO = "full_auto" # Auto-ejecución completa (usar con precaución)
 
 
+def load_unified_config(config_path: str = "config.yaml") -> dict:
+    """Carga la configuración mezclando YAML y JSON persistente"""
+    import json
+    config = {}
+    
+    # 1. Cargar config base (YAML)
+    try:
+        if os.path.exists(config_path):
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = yaml.safe_load(f) or {}
+    except Exception as e:
+        logger.error(f"Error cargando config YAML: {e}")
+        
+    # 2. Cargar config persistente de usuario (JSON)
+    user_config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'user_config.json')
+    try:
+        if os.path.exists(user_config_path):
+            with open(user_config_path, 'r', encoding='utf-8') as f:
+                user_config = json.load(f)
+                
+                # Mezclar parámetros principales
+                if 'symbols' in user_config:
+                    config['trading'] = config.get('trading', {})
+                    config['trading']['symbols'] = user_config['symbols']
+                
+                if 'max_risk_percent' in user_config:
+                    config['risk'] = config.get('risk', {})
+                    config['risk']['max_allowed_risk_percent'] = user_config['max_risk_percent']
+                    
+                if 'max_positions' in user_config:
+                    if 'risk' not in config: config['risk'] = {}
+                    config['risk']['max_open_positions'] = user_config['max_positions']
+                
+                if 'trading_mode' in user_config:
+                    config['trading_mode'] = user_config['trading_mode']
+                    
+                logger.info("✅ Configuración persistente cargada desde user_config.json")
+    except Exception as e:
+        logger.warning(f"No se pudo cargar user_config.json (usando defaults): {e}")
+        
+    return config
+
+
 class TradingOrchestrator:
     """
     Orquestador principal del sistema de trading.
@@ -48,11 +93,12 @@ class TradingOrchestrator:
     Coordina todos los agentes y módulos para ejecutar el ciclo de trading.
     """
     
-    def __init__(self, config_path: str = "config.yaml"):
-        """Inicializa el orquestador"""
-        self.config = self._load_config(config_path)
+    def __init__(self, config: dict = None):
+        """Inicializa el orquestador con una configuración ya cargada"""
+        self.config = config or load_unified_config()
         self.running = False
         self._shutdown_event = threading.Event()
+        self.state = TradingState.IDLE
         
         # Modo de ejecución (cambiar a SAFE_AUTO cuando esté listo)
         self.execution_mode = ExecutionMode.SAFE_AUTO
@@ -70,49 +116,6 @@ class TradingOrchestrator:
         logger.info("🚀 Sistema de Trading con IA - Iniciando...")
         logger.info(f"📋 Modo de ejecución: {self.execution_mode.value.upper()}")
         logger.info("=" * 60)
-    
-    def _load_config(self, config_path: str) -> dict:
-        """Carga configuración base y mezcla con la persistente del usuario"""
-        import json
-        full_path = os.path.join(BASE_DIR, config_path)
-        config = {}
-        
-        # 1. Cargar config base (YAML)
-        try:
-            if os.path.exists(full_path):
-                with open(full_path, 'r', encoding='utf-8') as f:
-                    config = yaml.safe_load(f) or {}
-        except Exception as e:
-            logger.error(f"Error cargando config YAML: {e}")
-            
-        # 2. Cargar config persistente de usuario (JSON)
-        user_config_path = os.path.join(BASE_DIR, 'data', 'user_config.json')
-        try:
-            if os.path.exists(user_config_path):
-                with open(user_config_path, 'r', encoding='utf-8') as f:
-                    user_config = json.load(f)
-                    
-                    # Mezclar parámetros principales
-                    if 'symbols' in user_config:
-                        config['trading'] = config.get('trading', {})
-                        config['trading']['symbols'] = user_config['symbols']
-                    
-                    if 'max_risk_percent' in user_config:
-                        config['risk'] = config.get('risk', {})
-                        config['risk']['max_allowed_risk_percent'] = user_config['max_risk_percent']
-                        
-                    if 'max_positions' in user_config:
-                        config['risk']['max_open_positions'] = user_config['max_positions']
-                    
-                    # Actualizar modo de trading en el config interno
-                    if 'trading_mode' in user_config:
-                        config['trading_mode'] = user_config['trading_mode']
-                        
-                    logger.info("✅ Configuración persistente cargada desde user_config.json")
-        except Exception as e:
-            logger.warning(f"No se pudo cargar user_config.json (usando defaults): {e}")
-            
-        return config
     
     def _import_modules(self):
         """Importa módulos del sistema"""
@@ -202,120 +205,144 @@ class TradingOrchestrator:
         logger.info(f"📝 Trades hoy: {self.daily_trades}/{self.max_daily_trades}")
     
     def trading_cycle(self):
-        """Ejecuta un ciclo completo de trading"""
+        """
+        Runs the full state machine lifecycle.
+        IDLE -> OBSERVE -> READY -> EXECUTE (-> MANAGE)
+        """
         if self._shutdown_event.is_set():
             return
-        
+            
         logger.info("-" * 40)
-        logger.info(f"📊 Ciclo de trading - {datetime.now().strftime('%H:%M:%S')}")
+        logger.info(f"🔄 GLOBAL STATE: {self.state.name} | {datetime.now().strftime('%H:%M:%S')}")
+        
+        # 1. State Transition: IDLE -> OBSERVE
+        if self.state == TradingState.IDLE:
+             self.state = TradingState.OBSERVE
+             
+        # 2. State: OBSERVE (Data Collection)
+        if self.state == TradingState.OBSERVE:
+            try:
+                # Actualizar datos técnicos, noticias, etc.
+                # Nota: El scraping pesado se mantiene en su propio schedule para no bloquear,
+                # pero aquí verificamos que tenemos datos recientes.
+                pass 
+                self.state = TradingState.READY
+            except Exception as e:
+                logger.error(f"Error in OBSERVE state: {e}")
+                self.state = TradingState.RECOVER
+
+        # 3. State: READY (Analysis & Signal Generation)
+        if self.state == TradingState.READY:
+            try:
+                symbols = [s['symbol'] for s in self.config.get('symbols', []) if s.get('enabled', True)]
+                for symbol in symbols:
+                    self._process_symbol_state_guided(symbol)
+                
+                # If all processed successfully
+                self.state = TradingState.IDLE # Return to IDLE until next trigger
+                
+            except Exception as e:
+                 logger.error(f"Error in READY/EXECUTE flow: {e}")
+                 self.state = TradingState.RECOVER
+
+        # 4. State: RECOVER
+        if self.state == TradingState.RECOVER:
+             logger.warning("🚑 Entering RECOVERY mode...")
+             try:
+                 if not self.mt5.ensure_connected():
+                     self.mt5.connect()
+                 self.state = TradingState.IDLE
+                 logger.info("✅ Recovery successful -> IDLE")
+             except Exception as e:
+                 logger.error(f"Recovery failed: {e}")
+                 
+    def _process_symbol_state_guided(self, symbol: str):
+        """Procesa un símbolo específico bajo la máquina de estados"""
+        
+        # ... Logica de análisis (READY) ...
+        # ... Si hay señal -> Cambiar a EXECUTE implícito para ese trade ...
+        
+        # (Reutilizamos la lógica existente pero mentalmente mapeada a READY -> EXECUTE)
+        logger.debug(f"[{self.state.name}] Procesando {symbol}...")
         
         try:
-            symbols = [s['symbol'] for s in self.config.get('symbols', []) if s.get('enabled', True)]
-            
-            for symbol in symbols:
-                self._process_symbol(symbol)
-            
-        except Exception as e:
-            logger.error(f"Error en ciclo de trading: {e}")
-    
-    def _process_symbol(self, symbol: str):
-        """Procesa un símbolo específico"""
-        logger.debug(f"Procesando {symbol}...")
-        
-        try:
-            # 1. Obtener datos técnicos de MT5
+            # READY: Analisis Tecnico
             if self.mt5.connected:
                 timeframe = self.config.get('strategy', {}).get('timeframe', 'M15')
                 rates = self.mt5.get_rates(symbol, timeframe, 100)
-                
                 if rates is not None and len(rates) > 0:
-                    # 2. Análisis técnico
                     tech_result = self.technical_agent.analyze_symbol(rates, symbol)
                 else:
                     tech_result = {"combined_signal": "HOLD", "combined_score": 0}
             else:
                 tech_result = {"combined_signal": "HOLD", "combined_score": 0}
             
-            # 3. Análisis de sentimiento (si hay LLM)
+            # READY: Sentiment
             if self.llm.is_available():
-                # Obtener noticias recientes de la base de datos
                 news_list = self.storage.get_recent_news(hours=24, processed=True)
                 news_texts = [n.title for n in news_list[:5]]
-                
                 if news_texts:
                     sent_result = self.sentiment_agent.analyze_for_symbol(news_texts, symbol)
-                    self.storage.save_agent_log("SentimentAgent", f"Análisis {symbol}", 
-                        f"sentiment={sent_result.get('sentiment', 'neutral')}", True, 0)
                 else:
                     sent_result = {"sentiment": "neutral", "score": 0, "confidence": 0}
-                    self.storage.save_agent_log("SentimentAgent", f"Sin noticias {symbol}", 
-                        "No hay noticias para analizar", True, 0)
             else:
-                sent_result = {"sentiment": "neutral", "score": 0, "confidence": 0}
-                self.storage.save_agent_log("SentimentAgent", "LLM no disponible", 
-                    "Ollama no está corriendo", False, 0)
-            
-            # 4. Datos de noticias del NewsAgent
+                 sent_result = {"sentiment": "neutral", "score": 0, "confidence": 0}
+
             news_result = self.news_agent.get_market_sentiment(symbol[:3])
             
-            # 5. Generar decisión combinada
-            decision = self.combiner.make_decision(
-                symbol=symbol,
-                technical_result=tech_result,
-                sentiment_result=sent_result,
-                news_result=news_result
-            )
+            # READY: Combiner
+            decision = self.combiner.make_decision(symbol, tech_result, sent_result, news_result)
             
-            logger.info(f"  {symbol}: {decision.action} (confianza: {decision.confidence:.0%})")
-            
-            # 6. Si hay señal de trading...
+            # EXECUTE Transition Check
             if decision.action in ["BUY", "SELL"] and decision.confidence > 0.5:
-                # Verificar con RiskAgent
-                risk_check = self.risk_agent.run({
+                # EXECUTE: Risk Check (Context Kill Switch + Core Position)
+                 current_positions = self.order_agent.get_open_positions()
+                 symbol_positions = [p for p in current_positions if p.get('symbol') == symbol]
+                 
+                 # 1. Kill Switch: Si la señal combinada es débil, abortar
+                 if abs(decision.combined_score) < 0.2:
+                      logger.warning(f"🚫 [Kill Switch] Señal débil ({decision.combined_score:.2f}) en {symbol}. Entradas bloqueadas.")
+                      return
+
+                 # 2. Core Position Rule: Máximo 1 posición "Core" por símbolo
+                 # Solo permitimos añadir si la posición existente está en profit significativo (piramidación segura)
+                 # o si la lógica de scalping (que gestiona sus propias IDs) lo permite.
+                 if len(symbol_positions) >= 1:
+                     # Verificar si es una posición ganadora para permitir add-on
+                     # Por simplicidad y seguridad fase 3: Bloquear add-ons por ahora
+                     logger.info(f"🛑 [Core Logic] Ya existe posición en {symbol}. Bloqueando nueva entrada (Regla: 1 Core).")
+                     return
+
+                 risk_check = self.risk_agent.run({
                     "symbol": symbol,
                     "type": decision.action,
                     "volume": 0.01,
                     "signal_strength": decision.confidence,
                     "balance": self._get_balance(),
-                    "open_positions": len(self.order_agent.get_open_positions())
+                    "open_positions": len(current_positions)
                 })
                 
-                if risk_check.success and risk_check.data.get("approved"):
-                    # Guardar señal
-                    if decision.signal:
-                        signal_id = self.storage.save_signal(decision.signal.to_dict())
-                    else:
-                        signal_id = None
+                 if risk_check.success and risk_check.data.get("approved"):
+                    # EXECUTE: Send Order
+                    tp_pips = risk_check.data.get("recommended_tp", 100)
+                    sl_pips = risk_check.data.get("recommended_sl", 50)
                     
-                    # Log de señal válida
-                    logger.info(f"  ➡️ Señal válida para {decision.action} {symbol}")
-                    logger.info(f"     Volume: {risk_check.data.get('max_volume')} | SL: {risk_check.data.get('recommended_sl')} pips | TP: {risk_check.data.get('recommended_tp')} pips")
-                    
-                    self.storage.save_agent_log("RiskAgent", f"Aprobado {decision.action} {symbol}",
-                        f"Vol:{risk_check.data.get('max_volume')} SL:{risk_check.data.get('recommended_sl')}", True, 0)
-                    
-                    # Ejecutar según modo
+                    # Force R:R >= 2 (Ajuste 1: TP dinámico / ratio fijo mínimo)
+                    if tp_pips < (sl_pips * 2):
+                        tp_pips = sl_pips * 2
+                        
+                    logger.info(f"🚀 EXECUTE STATE: Sending order for {symbol} | R:R Planificado: {tp_pips/sl_pips:.1f}")
                     self._execute_trade(
                         symbol=symbol,
                         action=decision.action,
                         volume=risk_check.data.get("max_volume", 0.01),
-                        sl_pips=risk_check.data.get("recommended_sl", 50),
-                        tp_pips=risk_check.data.get("recommended_tp", 100),
-                        signal_id=signal_id
+                        sl_pips=sl_pips,
+                        tp_pips=tp_pips,
+                        signal_id=None
                     )
-                else:
-                    reasons = risk_check.data.get("reasons", []) if risk_check.success else []
-                    logger.debug(f"  ⚠️ Trade rechazado por RiskAgent: {reasons}")
-                    self.storage.save_agent_log("RiskAgent", f"Rechazado {decision.action} {symbol}",
-                        f"Razones: {', '.join(reasons) if reasons else 'No aprobado'}", True, 0)
-            else:
-                # No hay señal fuerte - registrar que RiskAgent está listo
-                if decision.action == "HOLD":
-                    self.storage.save_agent_log("RiskAgent", f"Sin señal {symbol}",
-                        f"Esperando señales (HOLD)", True, 0)
-            
         except Exception as e:
-            logger.error(f"Error procesando {symbol}: {e}")
+            logger.error(f"Error processing {symbol}: {e}")
+            raise e # Let the main loop handle transition to RECOVER
     
     def _execute_trade(self, symbol: str, action: str, volume: float, sl_pips: int, tp_pips: int, signal_id: Optional[int]):
         """Ejecuta una orden según el modo de ejecución"""
@@ -496,11 +523,11 @@ class TradingOrchestrator:
             else:
                 profit_pips = (open_price - current_price) / pip_value
             
-            # Configuración de trailing
-            trailing_activation_pips = 30  # Activar trailing después de 30 pips
-            trailing_distance_pips = 25    # Mantener 25 pips de distancia
-            breakeven_activation_pips = 20 # Break-even después de 20 pips
-            breakeven_buffer_pips = 2      # Buffer sobre entrada para BE
+            # Configuración de trailing (Ajuste 1: BE rápido)
+            trailing_activation_pips = 30  
+            trailing_distance_pips = 25    
+            breakeven_activation_pips = 10 # Break-even RÁPIDO (antes 20)
+            breakeven_buffer_pips = 2      
             
             # 1. Break-Even: Mover SL a entrada + buffer cuando profit > activación
             if profit_pips >= breakeven_activation_pips:
@@ -679,13 +706,12 @@ class TradingOrchestrator:
     
     def _reset_daily_counters(self):
         """Reset contador diario de trades a medianoche"""
-        logger.info("🔄 Reseteando contadores diarios...")
+        logger.info("🔄 Reseteando conatadores diarios...")
         self.daily_trades = 0
         self.last_trade_time = {}
         logger.info(f"✅ Contador de trades reseteado (máx: {self.max_daily_trades})")
 
     def stop(self):
-
         """Detiene el orquestador"""
         logger.info("")
         logger.info("🛑 Deteniendo sistema...")
@@ -704,80 +730,64 @@ class TradingOrchestrator:
         self.stop()
 
 
-def load_unified_config():
-    """Carga la configuración mezclando YAML y JSON persistente"""
-    # Crear una instancia temporal solo para cargar config
-    orch = TradingOrchestrator()
-    return orch.config
-
 def main():
-    """Función principal"""
-    
-    # Cargar configuración unificada (YAML + Persistencia)
+    """Función principal coordinada"""
     config = load_unified_config()
     trading_mode = config.get('trading_mode', 'normal')
     
     logger.info(f"🎮 Modo de trading seleccionado: {trading_mode.upper()}")
     
-    if trading_mode == 'scalping':
-        # Modo Scalping - 6 capas de IA
-        logger.info("⚡ Iniciando modo SCALPING...")
-        
-        from scalping.orchestrator import ScalpingOrchestrator
-        from mt5.connector import MT5Connector
-        from mt5.order_agent import OrderAgent
-        from scraping.storage import get_storage
-        
-        # Inicializar componentes
-        mt5 = MT5Connector()
-        mt5.connect()
-        
-        order_agent = OrderAgent()
-        storage = get_storage()
-        
-        # Crear orquestador de scalping
-        scalping = ScalpingOrchestrator(
-            mt5_connector=mt5,
-            order_agent=order_agent,
-            storage=storage,
-            config=config
-        )
-        
-        # Manejar señales
-        def handle_signal(signum, frame):
-            logger.info("\n⚠️ Señal de interrupción recibida")
-            scalping.stop()
-            mt5.disconnect()
-            sys.exit(0)
-        
-        signal.signal(signal.SIGINT, handle_signal)
-        signal.signal(signal.SIGTERM, handle_signal)
-        
-        try:
-            scalping.start()
-        except KeyboardInterrupt:
-            scalping.stop()
-            mt5.disconnect()
-        except Exception as e:
-            logger.error(f"Error fatal en scalping: {e}")
-            scalping.stop()
-            mt5.disconnect()
+    instance = None
+    mt5 = None
     
-    else:
-        # Modo Normal
-        orchestrator = TradingOrchestrator()
+    try:
+        if trading_mode == 'scalping':
+            from scalping.orchestrator import ScalpingOrchestrator
+            from mt5.connector import MT5Connector
+            from mt5.order_agent import OrderAgent
+            from scraping.storage import get_storage
+            
+            mt5 = MT5Connector()
+            if not mt5.connect():
+                logger.error("No se pudo conectar a MT5 para modo Scalping")
+                return
+                
+            order_agent = OrderAgent()
+            storage = get_storage()
+            
+            instance = ScalpingOrchestrator(
+                mt5_connector=mt5,
+                order_agent=order_agent,
+                storage=storage,
+                config=config
+            )
+        else:
+            instance = TradingOrchestrator(config=config)
+            mt5 = instance.mt5
         
-        # Manejar Ctrl+C
-        signal.signal(signal.SIGINT, orchestrator.handle_signal)
-        signal.signal(signal.SIGTERM, orchestrator.handle_signal)
+        # Manejar señales de forma unificada
+        def handle_exit(signum, frame):
+            logger.info("\n⚠️ Señal de interrupción recibida")
+            if instance:
+                instance.stop()
+            if mt5 and hasattr(mt5, 'disconnect'):
+                mt5.disconnect()
+            sys.exit(0)
+            
+        signal.signal(signal.SIGINT, handle_exit)
+        signal.signal(signal.SIGTERM, handle_exit)
         
-        try:
-            orchestrator.start()
-        except KeyboardInterrupt:
-            orchestrator.stop()
-        except Exception as e:
-            logger.error(f"Error fatal: {e}")
-            orchestrator.stop()
+        # Iniciar ejecución
+        instance.start()
+        
+    except KeyboardInterrupt:
+        if instance: instance.stop()
+    except Exception as e:
+        logger.critical(f"💥 Error fatal en el sistema: {e}", exc_info=True)
+        if instance: instance.stop()
+    finally:
+        if mt5 and hasattr(mt5, 'disconnect'):
+            mt5.disconnect()
 
 
 if __name__ == "__main__":

@@ -6,12 +6,12 @@
     "AUDUSD",
     "GBPUSD"
   ],
-  "timeframe": "M15",
-  "max_risk_percent": 2,
-  "max_positions": 3,
+  "timeframe": "M30",
+  "max_risk_percent": 5,
+  "max_positions": 11,
   "auto_refresh": true,
-  "refresh_interval": 5,
-  "trading_mode": "scalping",
+  "refresh_interval": 10,
+  "trading_mode": "normal",
   "scalping": {
     "max_positions_per_symbol": 1,
     "target_total_positions": 7,
@@ -19,5 +19,5 @@
     "take_profit_pips": 6,
     "max_trade_duration_seconds": 120
   },
-  "last_updated": "2025-12-22T17:34:31.129608"
+  "last_updated": "2025-12-22T19:30:10.998429"
 }

@@ -54,35 +54,44 @@ def render_metrics_report():
     analytics = TradingAnalytics(trades)
     metrics = analytics.calculate_all_metrics()
     
+    # Sanitizar para evitar errores en st.metric con NaN o Inf
+    def sanitize(val):
+        import math
+        if val is None or (isinstance(val, float) and (math.isnan(val) or math.isinf(val))):
+            return 0.0
+        return val
+
     # Métricas principales en cards
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
         st.metric(
             "Win Rate",
-            f"{metrics['win_rate']*100:.1f}%",
+            f"{sanitize(metrics['win_rate'])*100:.1f}%",
             delta=None
         )
     
     with col2:
-        profit_color = "normal" if metrics['net_profit'] >= 0 else "inverse"
+        profit = sanitize(metrics['net_profit'])
+        profit_pct = sanitize(metrics['net_profit_pct'])
+        profit_color = "normal" if profit >= 0 else "inverse"
         st.metric(
             "Profit Neto",
-            f"€{metrics['net_profit']:.2f}",
-            delta=f"{metrics['net_profit_pct']:.1f}%",
+            f"€{profit:.2f}",
+            delta=f"{profit_pct:.1f}%",
             delta_color=profit_color
         )
     
     with col3:
         st.metric(
             "Profit Factor",
-            f"{metrics['profit_factor']:.2f}"
+            f"{sanitize(metrics['profit_factor']):.2f}"
         )
     
     with col4:
         st.metric(
             "Sharpe Ratio",
-            f"{metrics['sharpe_ratio']:.2f}"
+            f"{sanitize(metrics['sharpe_ratio']):.2f}"
         )
     
     st.divider()
@@ -99,7 +108,8 @@ def render_metrics_report():
                 'Perdedores',
                 'Media Ganadora',
                 'Media Perdedora',
-                'Risk/Reward',
+                'R:R Real (AvgWin/AvgLoss)',
+                'R:R Planificado',
                 'Expectativa'
             ],
             'Valor': [
@@ -108,7 +118,8 @@ def render_metrics_report():
                 metrics['losing_trades'],
                 f"€{metrics['avg_winning_trade']:.2f}",
                 f"€{metrics['avg_losing_trade']:.2f}",
-                f"{metrics['risk_reward_ratio']:.2f}",
+                f"{abs(metrics['avg_winning_trade'] / metrics['avg_losing_trade']) if metrics['avg_losing_trade'] != 0 else 0:.2f} (Real)",
+                f"{metrics['risk_reward_ratio']:.2f} (Plan)",
                 f"€{metrics['expectancy']:.2f}"
             ]
         })

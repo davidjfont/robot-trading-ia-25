@@ -140,7 +140,14 @@ class MT5Connector:
                 )
                 
                 if not authorized:
-                    logger.error(f"Error en login: {mt5.last_error()}")
+                    error_code = mt5.last_error()
+                    logger.error(f"Error en login: {error_code}")
+                    if error_code[0] == mt5.RES_E_INVALID_ACCOUNT:
+                        logger.error("  👉 Cuenta inválida o no existe")
+                    elif error_code[0] == mt5.RES_E_INVALID_PASSWORD:
+                        logger.error("  👉 Contraseña incorrecta")
+                    elif error_code[0] == mt5.RES_E_CONNECT_FAILED:
+                        logger.error("  👉 No se pudo conectar al servidor")
                     return False
             
             self.connected = True
@@ -475,8 +482,21 @@ class MT5Connector:
         result = mt5.order_send(request)
         
         if result.retcode != mt5.TRADE_RETCODE_DONE:
-            error_msg = f"Error {result.retcode}: {result.comment}"
-            logger.error(f"Orden fallida: {error_msg}")
+            # Mapeo de errores comunes para diagnóstico fácil
+            error_reasons = {
+                10004: "Requote",
+                10006: "Rechazado",
+                10013: "Símbolo inválido",
+                10014: "Volumen inválido",
+                10015: "Precio inválido",
+                10018: "Mercado cerrado",
+                10019: "Fondos insuficientes",
+                10026: "Autotrading deshabilitado en la terminal",
+                10027: "Autotrading deshabilitado para la cuenta",
+            }
+            reason = error_reasons.get(result.retcode, result.comment)
+            error_msg = f"Error {result.retcode}: {reason}"
+            logger.error(f"Orden fallida para {symbol}: {error_msg}")
             
             return OrderResult(
                 success=False,

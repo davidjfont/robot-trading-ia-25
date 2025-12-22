@@ -6,6 +6,7 @@ El que manda - Observa precio en M1/M5, no indicadores
 from typing import Dict, Any, List
 from loguru import logger
 import numpy as np
+import pandas as pd
 
 
 class MicrostructureAgent:
@@ -60,7 +61,32 @@ class MicrostructureAgent:
         # 5. Analizar micro-impulsos
         impulse, impulse_direction = self._detect_micro_impulse(rates_m1)
         
+        # 6. 💿 ESTRATEGIA CARGADA: Arafura Scalper (MQL5 Logic)
+        # Se ejecuta en paralelo y tiene prioridad si detecta señal
+        arafura_signal = self._analyze_arafura_strategy(rates_m1)
+        
         # Lógica de decisión
+        signal = "NONE"
+        confidence = 0.0
+        entry_type = "MARKET"
+        reasons = []
+        
+        # Prioridad 1: Estrategia Arafura (El "Diskette")
+        if arafura_signal['signal'] != 'NONE':
+            signal = arafura_signal['signal']
+            confidence = arafura_signal['confidence']
+            entry_type = "MARKET" # MQL5 logic uses Market execution mostly
+            reasons.append(f"💿 Arafura: {arafura_signal['reason']}")
+            
+            return {
+                'signal': signal,
+                'confidence': confidence,
+                'entry_type': entry_type,
+                'reason': " | ".join(reasons),
+                'velocity': velocity,
+                'rejections': rejections,
+                'absorption': absorption
+            }
         signal = "NONE"
         confidence = 0.0
         entry_type = "MARKET"
@@ -261,3 +287,122 @@ class MicrostructureAgent:
             return True, "SELL"
         
         return False, "NONE"
+
+    # ════════════════════════════════════════════════════════════════
+    # 💿 MÓDULO ESTRATEGIA CARGADA: Arafura Scalper
+    # ════════════════════════════════════════════════════════════════
+    def _analyze_arafura_strategy(self, rates_m1: list) -> Dict[str, Any]:
+        """Implementación de la lógica del script MQL5"""
+        if len(rates_m1) < 60: # Necesitamos 50 para EMA lenta + buffer
+            return {'signal': 'NONE', 'confidence': 0, 'reason': ''}
+            
+        try:
+            df = pd.DataFrame(rates_m1)
+            
+            # Parámetros (del input del EA)
+            ema_fast_p = 20
+            ema_slow_p = 50
+            atr_p = 14
+            impulse_atr_mult = 1.20
+            breakout_lookback = 20
+            breakout_buffer_pts = 0.0006 # 6 points aprox (ajustado para FX 5 digitos)
+            pullback_ema_tol = 0.0010    # 10 points
+            pinbar_wick_ratio = 1.6
+            
+            # Cálculo de indicadores
+            df['ema_fast'] = df['close'].ewm(span=ema_fast_p, adjust=False).mean()
+            df['ema_slow'] = df['close'].ewm(span=ema_slow_p, adjust=False).mean()
+            
+            # ATR manual
+            df['tr0'] = abs(df['high'] - df['low'])
+            df['tr1'] = abs(df['high'] - df['close'].shift(1))
+            df['tr2'] = abs(df['low'] - df['close'].shift(1))
+            df['tr'] = df[['tr0', 'tr1', 'tr2']].max(axis=1)
+            df['atr'] = df['tr'].rolling(window=atr_p).mean()
+            
+            # Última vela cerrada (shift=1 en MT5 es iloc[-2] aquí)
+            # iloc[-1] es la vela actual en formación
+            if len(df) < 2: return {'signal': 'NONE'}
+            
+            curr = df.iloc[-1]   # Vela actual (no usada para señal confirmada)
+            c1 = df.iloc[-2]     # Vela cerrada (shift 1)
+            c2 = df.iloc[-3]     # Shift 2
+            
+            # Tendencia
+            trend_bull = c1['ema_fast'] > c1['ema_slow']
+            trend_bear = c1['ema_fast'] < c1['ema_slow']
+            
+            # 1. TRIGGER: IMPULSE BREAKOUT
+            # ---------------------------
+            atr_val = c1['atr']
+            range_val = c1['high'] - c1['low']
+            
+            is_impulse = range_val >= (atr_val * impulse_atr_mult)
+            
+            if is_impulse:
+                # Bullish Breakout
+                if trend_bull:
+                    # Close near high (upper 25%)
+                    if (c1['high'] - c1['close']) <= (range_val * 0.25):
+                        # Breakout check: High > Highest of last 20 (excluding c1)
+                        # window [-22:-2] -> 20 barras antes de c1
+                        hist_highs = df['high'].iloc[-22:-2] 
+                        if not hist_highs.empty:
+                            level = hist_highs.max()
+                            if (c1['high'] - level) >= breakout_buffer_pts:
+                                return {
+                                    'signal': 'BUY',
+                                    'confidence': 0.85,
+                                    'reason': 'Impulse Breakout (Bull)'
+                                }
+                
+                # Bearish Breakout
+                if trend_bear:
+                    # Close near low (lower 25%)
+                    if (c1['close'] - c1['low']) <= (range_val * 0.25):
+                        hist_lows = df['low'].iloc[-22:-2]
+                        if not hist_lows.empty:
+                            level = hist_lows.min()
+                            if (level - c1['low']) >= breakout_buffer_pts:
+                                return {
+                                    'signal': 'SELL',
+                                    'confidence': 0.85,
+                                    'reason': 'Impulse Breakout (Bear)'
+                                }
+
+            # 2. TRIGGER: PULLBACK REJECTION
+            # -----------------------------
+            # Pullback to EMA Fast
+            dist_to_ema = abs(c1['ema_fast'] - (c1['low'] if trend_bull else c1['high']))
+            near_ema = dist_to_ema <= pullback_ema_tol
+            
+            if near_ema:
+                body = abs(c1['close'] - c1['open'])
+                total_range = c1['high'] - c1['low']
+                
+                if total_range > 0 and body > 0:
+                    upper_wick = c1['high'] - max(c1['open'], c1['close'])
+                    lower_wick = min(c1['open'], c1['close']) - c1['low']
+                    
+                    # Bull Pinbar
+                    if trend_bull:
+                        if (lower_wick / body) >= pinbar_wick_ratio and lower_wick > upper_wick:
+                            return {
+                                'signal': 'BUY',
+                                'confidence': 0.75,
+                                'reason': 'Pullback Rejection (Bull Pinbar)'
+                            }
+                    
+                    # Bear Pinbar
+                    if trend_bear:
+                        if (upper_wick / body) >= pinbar_wick_ratio and upper_wick > lower_wick:
+                            return {
+                                'signal': 'SELL',
+                                'confidence': 0.75,
+                                'reason': 'Pullback Rejection (Bear Pinbar)'
+                            }
+
+        except Exception as e:
+            logger.error(f"Error analizando estrategia Arafura: {e}")
+            
+        return {'signal': 'NONE', 'confidence': 0, 'reason': ''}

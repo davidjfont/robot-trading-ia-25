@@ -177,15 +177,18 @@ class ScalpExecutionAgent:
             }
     
     def _adjust_volume(self, confidence: float) -> float:
-        """Ajusta volumen según confianza"""
+        """Ajusta volumen según confianza asegurando un mínimo de 0.01"""
         base_volume = self.volume
         
         if confidence >= 0.9:
-            return base_volume * 1.5
+            adjusted = base_volume * 1.5
         elif confidence >= 0.75:
-            return base_volume
+            adjusted = base_volume
         else:
-            return base_volume * 0.5
+            adjusted = base_volume * 0.5
+            
+        # Asegurar volumen mínimo de 0.01 (lote mínimo estándar)
+        return max(0.01, round(adjusted, 2))
     
     def _get_current_price(self, symbol: str, direction: str) -> Optional[float]:
         """Obtiene precio actual"""
@@ -205,27 +208,53 @@ class ScalpExecutionAgent:
             self._monitor_thread.start()
     
     def _monitor_trades(self):
-        """Monitorea trades activos y cierra por tiempo"""
+        """Monitorea trades activos y cierra por tiempo con validación de existencia"""
         while not self._stop_monitoring.is_set():
             try:
                 now = datetime.now()
                 tickets_to_remove = []
                 
+                # Sincronizar con MT5 ocasionalmente para limpiar tickets cerrados manualmente o por SL/TP
+                try:
+                    mt5_positions = self.order_agent.get_open_positions()
+                    active_tickets = {pos.get('ticket') for pos in mt5_positions}
+                    
+                    # Si un ticket está en nuestra lista pero no en MT5, marcar para remover
+                    for ticket in list(self.active_scalp_trades.keys()):
+                        if ticket not in active_tickets:
+                            tickets_to_remove.append(ticket)
+                except Exception as e:
+                    logger.debug(f"Error sincronizando monitoreo con MT5: {e}")
+
                 for ticket, trade_info in list(self.active_scalp_trades.items()):
+                    if ticket in tickets_to_remove:
+                        continue
+                        
                     elapsed = (now - trade_info['open_time']).total_seconds()
                     
                     # Cerrar si excede tiempo máximo
                     if elapsed >= self.max_trade_duration:
-                        logger.warning(f"[ScalpExecution] ⏱️ Tiempo máximo alcanzado para #{ticket}")
-                        self._close_trade(ticket, "TIMEOUT")
+                        # Doble verificación de que todavía existe antes de avisar
+                        exists = False
+                        try:
+                            positions = self.order_agent.get_open_positions()
+                            exists = any(p.get('ticket') == ticket for p in positions)
+                        except:
+                            exists = True # Ante la duda, intentamos cerrar
+                            
+                        if exists:
+                            logger.warning(f"[ScalpExecution] ⏱️ Tiempo máximo alcanzado para #{ticket}")
+                            self._close_trade(ticket, "TIMEOUT")
+                        
                         tickets_to_remove.append(ticket)
                     
                     # Verificar BE+1 cuando esté en profit
                     elif elapsed >= 30:  # Después de 30 segundos
                         self._check_breakeven(ticket, trade_info)
                 
-                for ticket in tickets_to_remove:
-                    del self.active_scalp_trades[ticket]
+                for ticket in set(tickets_to_remove):
+                    if ticket in self.active_scalp_trades:
+                        del self.active_scalp_trades[ticket]
                 
                 # Si no hay trades activos, detener monitoreo
                 if not self.active_scalp_trades:

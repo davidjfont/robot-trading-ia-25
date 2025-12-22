@@ -335,17 +335,17 @@ def render_signals(storage):
     signals = storage.get_recent_signals(hours=24) if storage else []
     
     if not signals:
-        st.info("No hay señales recientes. El sistema está analizando los mercados...")
-        
-        # Datos de ejemplo
-        example_signals = [
-            {"symbol": "EURUSD", "type": "BUY", "strength": 0.72, "score": 0.65, "time": datetime.now()},
-            {"symbol": "GBPUSD", "type": "SELL", "strength": 0.45, "score": -0.38, "time": datetime.now()},
-            {"symbol": "USDJPY", "type": "HOLD", "strength": 0.25, "score": 0.12, "time": datetime.now()},
-        ]
-        
-        for sig in example_signals:
-            render_signal_card(sig)
+        if st.session_state.get('simulation_mode', False):
+            # Datos de ejemplo solo en modo simulación
+            example_signals = [
+                {"symbol": "EURUSD", "type": "BUY", "strength": 0.72, "score": 0.65, "time": datetime.now()},
+                {"symbol": "GBPUSD", "type": "SELL", "strength": 0.45, "score": -0.38, "time": datetime.now()},
+                {"symbol": "USDJPY", "type": "HOLD", "strength": 0.25, "score": 0.12, "time": datetime.now()},
+            ]
+            for sig in example_signals:
+                render_signal_card(sig)
+        else:
+            st.info("No hay señales recientes. El sistema está analizando los mercados...")
     else:
         for sig in signals[:5]:
             render_signal_card({

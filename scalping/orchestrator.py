@@ -86,13 +86,18 @@ class ScalpingOrchestrator:
             try:
                 cycle_start = time.time()
                 
-                # Obtener posiciones actuales una vez por ciclo
+                # ═══════════════════════════════════════════════════════════
+                # AUTO-MAINTAIN: Asegurar al menos una posición por símbolo seleccionado
+                # ═══════════════════════════════════════════════════════════
                 positions = self.order_agent.get_open_positions()
                 symbols_with_positions = {p.get('symbol') for p in positions} if positions else set()
                 
-                # AUTO-MAINTAIN: Asegurar al menos una posición por símbolo seleccionado
+                # Combinar con trades que acabamos de abrir pero MT5 aún no reporta
+                pending_symbols = {t['symbol'] for t in self.execution_agent.active_scalp_trades.values()}
+                all_active_symbols = symbols_with_positions.union(pending_symbols)
+                
                 for symbol in self.symbols:
-                    if symbol not in symbols_with_positions:
+                    if symbol not in all_active_symbols:
                         logger.info(f"🤖 SCALPING AUTO-FIX: Forzando posición mínima en {symbol}")
                         # Usar dirección técnica o aleatoria para la entrada forzada
                         self._force_open_scalp(symbol)
@@ -116,24 +121,39 @@ class ScalpingOrchestrator:
                 time.sleep(5)
     
     def _force_open_scalp(self, symbol: str):
-        """Abre una posición de scalping forzada si no hay ninguna"""
+        """Abre una posición de scalping forzada si no hay ninguna, con chequeos de seguridad mínimos"""
         import random
         
-        # Obtener datos rápidos para dirección
-        rates = self._get_rates(symbol, "M1", 5)
-        if rates and len(rates) >= 2:
-            direction = "BUY" if rates[-1]['close'] > rates[0]['close'] else "SELL"
+        # 1. Chequeo de contexto mínimo
+        rates_m5 = self._get_rates(symbol, "M5", 20)
+        rates_m15 = self._get_rates(symbol, "M15", 20)
+        context = self.context_agent.analyze(symbol, rates_m5, rates_m15)
+        
+        if not context['can_trade']:
+            logger.warning(f"[Scalp] {symbol}: No se puede forzar entrada - Contexto bloqueado: {context['reasons']}")
+            return
+
+        # 2. Chequeo de riesgo
+        risk = self.risk_agent.can_trade(symbol)
+        if not risk['allowed']:
+            logger.warning(f"[Scalp] {symbol}: No se puede forzar entrada - Riesgo bloqueado: {risk['reason']}")
+            return
+
+        # 3. Decidir dirección basada en micro-tendencia
+        rates_m1 = self._get_rates(symbol, "M1", 5)
+        if rates_m1 and len(rates_m1) >= 2:
+            direction = "BUY" if rates_m1[-1]['close'] > rates_m1[0]['close'] else "SELL"
         else:
             direction = random.choice(["BUY", "SELL"])
             
-        logger.info(f"⚡ Forzando entrada de scalping: {direction} {symbol}")
+        logger.info(f"⚡ Ejecutando entrada de scalping forzada (auto-fix): {direction} {symbol}")
         
-        # Ejecutar vía Execution Agent con confianza media para parámetros estándar
+        # 4. Ejecutar vía Execution Agent
         self.execution_agent.execute(
             symbol=symbol,
             direction=direction,
             entry_type="MARKET",
-            confidence=0.75
+            confidence=0.70  # Confianza base para entradas forzadas
         )
     
     def stop(self):
@@ -163,7 +183,7 @@ class ScalpingOrchestrator:
         # ═══════════════════════════════════════════════════════════
         # CAPA 2: MICROESTRUCTURA - ¿Hay señal?
         # ═══════════════════════════════════════════════════════════
-        rates_m1 = self._get_rates(symbol, "M1", 20)
+        rates_m1 = self._get_rates(symbol, "M1", 100)
         
         micro = self.micro_agent.analyze(rates_m1, rates_m5)
         
