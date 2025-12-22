@@ -228,15 +228,20 @@ class MT5Connector:
             return None
         
         tick = mt5.symbol_info_tick(symbol)
-        if tick:
-            return Tick(
-                symbol=symbol,
-                bid=tick.bid,
-                ask=tick.ask,
-                time=datetime.fromtimestamp(tick.time),
-                spread=round((tick.ask - tick.bid) / 0.0001, 1)
-            )
-        return None
+        if tick:\r
+            return Tick(\r
+                symbol=symbol,\r
+                bid=tick.bid,\r
+                ask=tick.ask,\r
+                time=datetime.fromtimestamp(tick.time),\r
+                spread=round((tick.ask - tick.bid) / 0.0001, 1)\r
+            )\r
+        return None\r
+    \r
+    # Alias for compatibility\r
+    def get_symbol_tick(self, symbol: str) -> Optional[Tick]:\r
+        """Alias for get_tick()"""\r
+        return self.get_tick(symbol)
     
     def get_rates(
         self, 
