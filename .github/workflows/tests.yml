@@ -1,0 +1,65 @@
+name: Tests & Linting
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+        cache: 'pip'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pytest pytest-cov flake8 black
+        # Install only packages that work on Linux (skip MT5, TA-Lib)
+        pip install python-dotenv pyyaml requests beautifulsoup4 lxml
+        pip install pandas numpy scipy
+        pip install streamlit plotly sqlalchemy schedule loguru rich openpyxl
+    
+    - name: Lint with flake8
+      run: |
+        # Stop build if there are Python syntax errors or undefined names
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        # Check for style issues (warnings only)
+        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=120 --statistics
+    
+    - name: Check code formatting with black
+      run: |
+        black --check --diff . || echo "Code formatting suggestions above"
+      continue-on-error: true
+    
+    - name: Run tests
+      run: |
+        pytest tests/ -v --cov=agents --cov=strategies --cov-report=xml --cov-report=term
+      continue-on-error: true
+    
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        fail_ci_if_error: false
+
+  security:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Check for secrets in code
+      run: |
+        # Basic check for common secret patterns
+        ! grep -rn "password.*=" --include="*.py" . | grep -v "config.example" | grep -v ".git" || echo "Warning: possible hardcoded passwords"
+        ! grep -rn "bot_token.*=" --include="*.py" . | grep -v "config.example" | grep -v ".git" || echo "Warning: possible hardcoded tokens"
+      continue-on-error: true

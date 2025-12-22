@@ -45,7 +45,7 @@ logs/
 data/trading.db
 
 # Config with secrets (use config.example.yaml as template)
-# config.yaml  # Uncomment if you have secrets
+config.yaml
 
 # OS
 .DS_Store
