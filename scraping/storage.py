@@ -10,9 +10,11 @@ from sqlalchemy.orm import sessionmaker, Session
 from loguru import logger
 import os
 import yaml
+import json
 
 
 Base = declarative_base()
+
 
 
 class ScrapedNews(Base):
@@ -85,6 +87,17 @@ class TradeHistory(Base):
     extra_data = Column(JSON)
 
 
+class DailyMemory(Base):
+    """Modelo para memoria diaria resumida"""
+    __tablename__ = 'daily_memory'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    date = Column(String(20), nullable=False, unique=True)  # YYYY-MM-DD
+    summary = Column(Text, nullable=False)
+    stats = Column(JSON)
+    created_at = Column(DateTime, default=datetime.now)
+
+
 class AgentLog(Base):
     """Modelo para logs de agentes"""
     __tablename__ = 'agent_logs'
@@ -96,6 +109,7 @@ class AgentLog(Base):
     success = Column(Boolean)
     execution_time_ms = Column(Float)
     created_at = Column(DateTime, default=datetime.now)
+
 
 
 class Storage:
@@ -172,8 +186,9 @@ class Storage:
                     content=item.content,
                     url=item.url,
                     scraped_at=item.timestamp,
-                    extra_data=item.extra_data
+                    extra_data=item.metadata
                 )
+
                 session.add(news)
                 saved += 1
             
@@ -244,14 +259,15 @@ class Storage:
             for item in items:
                 event = EconomicEvent(
                     name=item.title,
-                    currency=item.extra_data.get("currency", ""),
-                    impact=item.extra_data.get("impact", "low"),
-                    event_time=item.extra_data.get("time", ""),
-                    actual=item.extra_data.get("actual", ""),
-                    forecast=item.extra_data.get("forecast", ""),
-                    previous=item.extra_data.get("previous", ""),
+                    currency=item.metadata.get("currency", ""),
+                    impact=item.metadata.get("impact", "low"),
+                    event_time=item.metadata.get("time", ""),
+                    actual=item.metadata.get("actual", ""),
+                    forecast=item.metadata.get("forecast", ""),
+                    previous=item.metadata.get("previous", ""),
                     scraped_at=item.timestamp
                 )
+
                 session.add(event)
                 saved += 1
             
@@ -363,6 +379,89 @@ class Storage:
             return 0
         finally:
             session.close()
+
+    def import_mt5_history(self, deals: List[Dict[str, Any]]) -> int:
+        """
+        Importa y reconstruye el historial completo desde deals de MT5.
+        Diferencia de sync_closed_trades porque crea el trade si no existe.
+        """
+        if not deals:
+            return 0
+            
+        session = self.get_session()
+        imported_count = 0
+        
+        try:
+            # Agrupar deals por ticket de posición
+            deals_by_ticket = {}
+            for d in deals:
+                ticket = d['ticket']
+                if ticket not in deals_by_ticket:
+                    deals_by_ticket[ticket] = []
+                deals_by_ticket[ticket].append(d)
+            
+            for ticket, t_deals in deals_by_ticket.items():
+                # Buscar si ya existe este trade en la DB
+                trade = session.query(TradeHistory).filter(TradeHistory.ticket == ticket).first()
+                
+                # Encontrar deal de entrada (entry_type=0) y salida (entry_type=1)
+                entry_deal = next((d for d in t_deals if d.get('entry_type') == 0), None)
+                exit_deal = next((d for d in t_deals if d.get('entry_type') == 1), None)
+                
+                if not trade:
+                    # Crear nuevo trade si tenemos al menos la ENTRADA (ideal) o la SALIDA (mínimo)
+                    if entry_deal:
+                        trade = TradeHistory(
+                            ticket=ticket,
+                            symbol=entry_deal['symbol'],
+                            order_type=entry_deal['type'],
+                            volume=entry_deal['volume'],
+                            open_price=entry_deal['price'],
+                            opened_at=entry_deal['timestamp'],
+                            status="open"
+                        )
+                        session.add(trade)
+                    elif exit_deal:
+                        # Si no tenemos la entrada (fuera del rango de días),
+                        # usamos los datos de la salida para reconstruir lo básico.
+                        # El precio de entrada real no lo tenemos, usamos el de salida como base
+                        # para que no falle el cálculo de profit.
+                        trade = TradeHistory(
+                            ticket=ticket,
+                            symbol=exit_deal['symbol'],
+                            order_type="SELL" if exit_deal['type'] == "BUY" else "BUY", # Invertir la salida
+                            volume=exit_deal['volume'],
+                            open_price=exit_deal['price'], # Desconocido, usamos salida para evitar saltos raros
+                            opened_at=exit_deal['timestamp'] - timedelta(hours=1), # Estimación
+                            status="open"
+                        )
+                        session.add(trade)
+                
+                # Actualizar datos de cierre si hay deal de salida
+                if trade and exit_deal:
+                    trade.status = "closed"
+                    trade.close_price = exit_deal['price']
+                    trade.profit = exit_deal['profit'] + exit_deal.get('commission', 0) + exit_deal.get('swap', 0)
+                    trade.closed_at = exit_deal['timestamp']
+                    
+                    # Si acabamos de crear el trade desde la salida, ajustamos el precio de entrada
+                    # para que el profit coincida con el reportado por MT5.
+                    # profit = (p_close - p_open) * vol * mult (aprox) -> p_open = p_close - (profit / (vol * mult))
+                    # Pero es más fácil confiar en el profit del deal de MT5 y dejar el open_price decorativo.
+                
+                imported_count += 1
+            
+            session.commit()
+            if imported_count > 0:
+                logger.info(f"Importados/Actualizados {imported_count} trades desde historial MT5")
+                
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Error importando historial: {e}")
+        finally:
+            session.close()
+            
+        return imported_count
     
     def get_open_trades(self) -> List[TradeHistory]:
         """Obtiene trades abiertos"""
@@ -406,29 +505,166 @@ class Storage:
     
     # ========== Logs ==========
     
-    def log_agent(self, agent_name: str, action: str, result: str, 
-                  success: bool, execution_time_ms: float = 0):
-        """Registra una acción de agente"""
+
+
+    # ========== Memoria Diaria ==========
+    
+    def save_daily_memory(self, date: str, summary: str, stats: Dict[str, Any]) -> bool:
+        """Guarda un resumen de memoria diaria"""
         session = self.get_session()
+        try:
+            # Verificar si ya existe
+            exists = session.query(DailyMemory).filter(DailyMemory.date == date).first()
+            if exists:
+                exists.summary = summary
+                exists.stats = stats
+                exists.created_at = datetime.now()
+            else:
+                mem = DailyMemory(
+                    date=date,
+                    summary=summary,
+                    stats=stats
+                )
+                session.add(mem)
+            
+            session.commit()
+            return True
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Error guardando memoria diaria: {e}")
+            return False
+    def get_trade_history(self, status: Optional[str] = None, limit: int = 100) -> List[TradeHistory]:
+        """Obtiene el historial de trades filtrado por status"""
+        session = self.get_session()
+        try:
+            query = session.query(TradeHistory)
+            if status:
+                query = query.filter(TradeHistory.status == status)
+            return query.order_by(TradeHistory.opened_at.desc()).limit(limit).all()
+        finally:
+            session.close()
+
+    def get_all_trade_results(self) -> List[Any]:
+        """
+        Obtiene todos los trades convertidos a objetos TradeResult (para analítica).
+        """
+        from strategies.analytics import TradeResult
         
+        session = self.get_session()
+        try:
+            trades = session.query(TradeHistory).filter(TradeHistory.status == "closed").all()
+            results = []
+            for t in trades:
+                # Calcular duración
+                duration = 0
+                if t.closed_at and t.opened_at:
+                    duration = int((t.closed_at - t.opened_at).total_seconds() // 60)
+                
+                # Calcular pips (estimación simple si no hay datos específicos de pips en DB)
+                pips = 0.0
+                if t.open_price and t.close_price:
+                    # Esto es una simplificación, dependería del símbolo (5 vs 3 decimales)
+                    pips = abs(t.close_price - t.open_price) * 10000
+                
+                results.append(TradeResult(
+                    ticket=t.ticket,
+                    symbol=t.symbol,
+                    order_type=t.order_type,
+                    volume=t.volume,
+                    open_price=t.open_price,
+                    close_price=t.close_price,
+                    open_time=t.opened_at,
+                    close_time=t.closed_at,
+                    profit=t.profit or 0.0,
+                    pips=pips,
+                    duration_minutes=duration
+                ))
+            return results
+        except Exception as e:
+            logger.error(f"Error cargando TradeResults: {e}")
+            return []
+        finally:
+            session.close()
+
+    def get_latest_memory(self) -> Optional[DailyMemory]:
+
+        """Obtiene el último resumen de memoria disponible"""
+        session = self.get_session()
+        try:
+            return session.query(DailyMemory).order_by(DailyMemory.date.desc()).first()
+        finally:
+            session.close()
+
+    def get_memory_by_date(self, date: str) -> Optional[DailyMemory]:
+        """Obtiene la memoria de una fecha específica"""
+        session = self.get_session()
+        try:
+            return session.query(DailyMemory).filter(DailyMemory.date == date).first()
+        finally:
+            session.close()
+
+    # ========== Logs de Agentes ==========
+
+    def save_agent_log(self, agent_name: str, action: str, result: str, success: bool, execution_time: float = 0):
+
+        """Guarda un log detallado de la acción de un agente"""
+        session = self.get_session()
         try:
             log = AgentLog(
                 agent_name=agent_name,
                 action=action,
-                result=result[:1000] if result else "",  # Limitar tamaño
+                result=str(result),  # Asegurar que sea string
                 success=success,
-                execution_time_ms=execution_time_ms
+                execution_time_ms=float(execution_time),
+                created_at=datetime.now()
             )
             session.add(log)
             session.commit()
         except Exception as e:
             session.rollback()
-            logger.error(f"Error guardando log: {e}")
+            logger.error(f"Error guardando agent log: {e}")
+        finally:
+            session.close()
+
+    def fetch_system_logs(self, limit: int = 50) -> List[AgentLog]:
+        """Obtiene los logs más recientes de los agentes para la consola"""
+        session = self.get_session()
+        try:
+            return session.query(AgentLog).order_by(AgentLog.created_at.desc()).limit(limit).all()
+        finally:
+            session.close()
+
+    def clear_trade_history(self):
+        """Borra todo el historial de trades"""
+        session = self.get_session()
+        try:
+            session.query(TradeHistory).delete()
+            session.commit()
+            logger.info("Historial de trades borrado")
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Error borrando historial: {e}")
+        finally:
+            session.close()
+
+    def clear_agent_logs(self):
+        """Borra todos los logs de agentes"""
+        session = self.get_session()
+        try:
+            session.query(AgentLog).delete()
+            session.commit()
+            logger.info("Logs de agentes borrados")
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Error borrando logs: {e}")
         finally:
             session.close()
 
 
+
 # Singleton
+
+
 _storage_instance: Optional[Storage] = None
 
 
@@ -437,6 +673,12 @@ def get_storage() -> Storage:
     global _storage_instance
     if _storage_instance is None:
         _storage_instance = Storage()
+    
+    # Verificación de seguridad para evitar AttributeErrors por cache
+    if not hasattr(_storage_instance, 'get_all_trade_results'):
+        logger.warning("Singleton de Storage desactualizado. Forzando re-instanciación.")
+        _storage_instance = Storage()
+        
     return _storage_instance
 
 

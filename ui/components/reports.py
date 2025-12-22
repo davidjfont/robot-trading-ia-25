@@ -112,7 +112,7 @@ def render_metrics_report():
                 f"€{metrics['expectancy']:.2f}"
             ]
         })
-        st.dataframe(metrics_df, use_container_width=True, hide_index=True)
+        st.dataframe(metrics_df, width='stretch', hide_index=True)
     
     with col2:
         st.markdown("### 📉 Riesgo")
@@ -136,7 +136,7 @@ def render_metrics_report():
                 metrics['max_consecutive_losses']
             ]
         })
-        st.dataframe(risk_df, use_container_width=True, hide_index=True)
+        st.dataframe(risk_df, width='stretch', hide_index=True)
     
     # Gráfico de equity curve
     st.markdown("### 📊 Curva de Equity")
@@ -214,7 +214,7 @@ def render_trade_journal():
         })
         
         st.dataframe(
-            example_data.style.applymap(
+            example_data.style.map(
                 lambda x: 'color: green' if isinstance(x, (int, float)) and x > 0 else 'color: red' if isinstance(x, (int, float)) and x < 0 else '',
                 subset=['Profit', 'Pips']
             ),
@@ -231,8 +231,7 @@ def render_trade_journal():
         'Entrada': t.open_price,
         'Salida': t.close_price,
         'Profit': t.profit,
-        'Pips': t.pips,
-        'Duración': f"{t.duration_minutes} min"
+        'Duración': f"{t.duration_minutes:.0f} min"
     } for t in trades])
     
     # Aplicar filtros
@@ -249,12 +248,13 @@ def render_trade_journal():
     
     # Mostrar tabla
     st.dataframe(
-        df.style.applymap(
+        df.style.map(
             lambda x: 'color: green' if isinstance(x, (int, float)) and x > 0 else 'color: red' if isinstance(x, (int, float)) and x < 0 else '',
-            subset=['Profit', 'Pips']
+            subset=['Profit']
         ),
         use_container_width=True
     )
+
     
     # Estadísticas rápidas
     st.caption(f"Mostrando {len(df)} operaciones | Profit total: €{df['Profit'].sum():.2f}")
@@ -293,7 +293,7 @@ def render_export_options():
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        if st.button("📊 Exportar CSV", use_container_width=True):
+        if st.button("📊 Exportar CSV", width='stretch'):
             csv_data = generate_csv_export(export_type, start_date, end_date)
             st.download_button(
                 label="⬇️ Descargar CSV",
@@ -304,7 +304,7 @@ def render_export_options():
             )
     
     with col2:
-        if st.button("📑 Exportar Excel", use_container_width=True):
+        if st.button("📑 Exportar Excel", width='stretch'):
             excel_data = generate_excel_export(export_type, start_date, end_date)
             st.download_button(
                 label="⬇️ Descargar Excel",
@@ -315,7 +315,7 @@ def render_export_options():
             )
     
     with col3:
-        if st.button("📝 Generar Reporte", use_container_width=True):
+        if st.button("📝 Generar Reporte", width='stretch'):
             report_text = generate_text_report(start_date, end_date)
             st.text_area("Reporte", report_text, height=400)
             st.download_button(
@@ -328,15 +328,31 @@ def render_export_options():
 
 
 def get_trades_for_period(period: str) -> List[TradeResult]:
-    """Obtiene trades para un período específico"""
-    # Por ahora retorna lista vacía, se integrará con storage
-    return []
+    """Obtiene trades para un período específico de la base de datos"""
+    storage = get_storage()
+    all_trades = storage.get_all_trade_results()
+    
+    if not all_trades:
+        return []
+    
+    now = datetime.now()
+    if period == "Última semana":
+        cutoff = now - timedelta(days=7)
+    elif period == "Último mes":
+        cutoff = now - timedelta(days=30)
+    elif period == "Últimos 3 meses":
+        cutoff = now - timedelta(days=90)
+    else:  # Todo el historial
+        return all_trades
+        
+    return [t for t in all_trades if t.close_time >= cutoff]
 
 
 def get_all_trades() -> List[TradeResult]:
-    """Obtiene todos los trades"""
-    # Por ahora retorna lista vacía, se integrará con storage
-    return []
+    """Obtiene todos los trades de la base de datos"""
+    storage = get_storage()
+    return storage.get_all_trade_results()
+
 
 
 def generate_csv_export(export_type: str, start_date, end_date) -> str:

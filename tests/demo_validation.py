@@ -123,11 +123,12 @@ class DemoValidator:
             symbols_fail = []
             
             for symbol in ["EURUSD", "GBPUSD", "USDJPY"]:
-                rates = connector.get_rates(symbol, 15, 100)
+                rates = connector.get_rates(symbol, "M15", 100)
                 if rates is not None and len(rates) > 50:
                     symbols_ok.append(symbol)
                 else:
                     symbols_fail.append(symbol)
+
             
             connector.disconnect()
             

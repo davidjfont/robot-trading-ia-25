@@ -161,6 +161,15 @@ class RiskAgent(BaseAgent):
                 daily_loss=self._daily_loss
             )
             
+            # Guardar en Logs de Sistema para Consola
+            self.storage.save_agent_log(
+                self.name,
+                f"Validación {data.get('symbol')}",
+                f"{'Aprobado' if assessment.approved else 'Rechazado'} (Score: {assessment.risk_score})",
+                assessment.approved
+            )
+
+            
             return AgentResult(
                 agent_name=self.name,
                 success=True,

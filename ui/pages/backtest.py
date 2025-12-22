@@ -143,7 +143,7 @@ def render_backtest_config():
         st.divider()
         
         # Botón de ejecutar
-        if st.button("🚀 Ejecutar Backtest", type="primary", use_container_width=True):
+        if st.button("🚀 Ejecutar Backtest", type="primary", width='stretch'):
             run_backtest()
 
 
@@ -228,7 +228,7 @@ def render_backtest_chart():
             margin=dict(l=50, r=50, t=30, b=50)
         )
         
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
         return
     
     # Gráfico con resultados reales
@@ -258,7 +258,7 @@ def render_backtest_chart():
             margin=dict(l=50, r=50, t=30, b=50)
         )
         
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
 
 def render_backtest_results():
@@ -353,7 +353,7 @@ def render_backtest_trades():
     
     st.dataframe(
         df.style.applymap(color_profit, subset=['Profit'] if 'Profit' in df.columns else []),
-        use_container_width=True,
+        width='stretch',
         height=300
     )
     
@@ -401,7 +401,7 @@ def render_optimization_panel():
         min_trades = st.number_input("Mínimo trades", value=20, key="opt_min_trades")
         max_dd = st.number_input("Max Drawdown (%)", value=20.0, key="opt_max_dd")
     
-    if st.button("🔬 Ejecutar Optimización", use_container_width=True):
+    if st.button("🔬 Ejecutar Optimización", width='stretch'):
         with st.spinner("Optimizando..."):
             st.info("Optimización en desarrollo...")
 

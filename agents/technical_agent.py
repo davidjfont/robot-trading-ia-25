@@ -16,6 +16,8 @@ except ImportError:
     PANDAS_AVAILABLE = False
 
 from .base_agent import BaseAgent, AgentResult
+from scraping.storage import get_storage
+
 
 
 class TrendDirection(Enum):
@@ -48,6 +50,8 @@ class TechnicalAgent(BaseAgent):
     
     def __init__(self):
         super().__init__("TechnicalAgent")
+        self.storage = get_storage()
+
         
         # Configuración de indicadores
         self.config = {
@@ -127,7 +131,15 @@ class TechnicalAgent(BaseAgent):
                 signals.append(macd_signal)
             
             # Calcular señal combinada
-            combined = self._combine_signals(signals)
+            result = self._combine_signals(signals)
+            
+            # Guardar log en DB
+            self.storage.save_agent_log(
+                self.name,
+                f"Análisis {symbol}",
+                f"{result['signal']} (score: {result['score']})",
+                True
+            )
             
             return AgentResult(
                 agent_name=self.name,
@@ -142,9 +154,10 @@ class TechnicalAgent(BaseAgent):
                             "strength": s.strength
                         } for s in signals
                     ],
-                    "combined_signal": combined["signal"],
-                    "combined_score": combined["score"],
-                    "trend": combined["trend"]
+                    "combined_signal": result["signal"],
+                    "combined_score": result["score"],
+                    "trend": result["trend"]
+
                 }
             )
             

@@ -71,10 +71,19 @@ class NewsAgent(BaseAgent):
                     )
                     analyzed_count += 1
             
+            # Guardar log en Consola
+            self.storage.save_agent_log(
+                self.name,
+                "Scraping y Análisis",
+                f"Noticias: {news_saved}, Eventos: {events_saved}, Analizadas: {analyzed_count}",
+                True
+            )
+            
             return AgentResult(
                 agent_name=self.name,
                 success=True,
                 data={
+
                     "news_scraped": len(news_items),
                     "news_saved": news_saved,
                     "events_scraped": len(calendar_items),

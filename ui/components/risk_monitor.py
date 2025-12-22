@@ -152,7 +152,7 @@ def render_risk_status(daily_loss: float, daily_limit: float,
     # Si estado crítico, mostrar botón de emergencia
     if status == "CRÍTICO":
         st.error("⚠️ LÍMITE DE RIESGO ALCANZADO")
-        if st.button("🚨 CERRAR TODAS LAS POSICIONES", type="primary", use_container_width=True):
+        if st.button("🚨 CERRAR TODAS LAS POSICIONES", type="primary", width='stretch'):
             st.warning("Cerrando todas las posiciones...")
 
 
@@ -205,17 +205,25 @@ def render_risk_config():
 
 
 def get_account_data() -> Optional[Dict]:
-    """Obtiene datos de la cuenta desde MT5"""
+    """Obtiene datos de la cuenta desde MT5, reusando el conector de la sesión si existe"""
     try:
-        connector = MT5Connector()
-        if not connector.connect():
-            return None
+        if 'mt5_connector' in st.session_state:
+            connector = st.session_state['mt5_connector']
+            if not connector.ensure_connected():
+                connector.connect()
+        else:
+            connector = MT5Connector()
+            if not connector.connect():
+                return None
+            st.session_state['mt5_connector'] = connector
         
         account_info = connector.get_account_info()
+
         positions = connector.get_positions()
-        connector.disconnect()
+        # NOTA: No desconectamos para permitir actualización en tiempo real
         
         if account_info:
+
             # Calcular profit del día (simplificado)
             profit_today = sum(pos.profit for pos in positions) if positions else 0
             

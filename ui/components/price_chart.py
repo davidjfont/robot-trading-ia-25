@@ -11,11 +11,16 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
 import sys
 import os
+from loguru import logger
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from mt5.connector import MT5Connector
 from strategies.indicators import TechnicalIndicators
+from agents.sentiment_agent import SentimentAgent
+from agents.technical_agent import TechnicalAgent
+from scraping.storage import get_storage
+
 
 
 def render_price_chart(symbol: str = "EURUSD", timeframe: str = "M15", 
@@ -27,28 +32,52 @@ def render_price_chart(symbol: str = "EURUSD", timeframe: str = "M15",
     # Controles del gráfico
     col1, col2, col3, col4 = st.columns(4)
     
+    # Sincronización inteligente con la barra lateral
+
+    if 'prev_sidebar_symbol' not in st.session_state:
+        st.session_state['prev_sidebar_symbol'] = symbol
+    if 'prev_sidebar_tf' not in st.session_state:
+        st.session_state['prev_sidebar_tf'] = timeframe
+
+    # Si el usuario cambia algo en la barra lateral, forzamos actualización del widget correspondiente
+    if st.session_state['prev_sidebar_symbol'] != symbol:
+        st.session_state['chart_symbol_selector'] = symbol
+        st.session_state['prev_sidebar_symbol'] = symbol
+
+    if st.session_state['prev_sidebar_tf'] != timeframe:
+        st.session_state['chart_tf_selector'] = timeframe
+        st.session_state['prev_sidebar_tf'] = timeframe
+
+    # Inicializar valores de los selectores si no existen
+    if 'chart_symbol_selector' not in st.session_state:
+        st.session_state['chart_symbol_selector'] = symbol
+    if 'chart_tf_selector' not in st.session_state:
+        st.session_state['chart_tf_selector'] = timeframe
+
+    symbols_list = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD"]
+    tf_list = ["M1", "M5", "M15", "M30", "H1", "H4", "D1"]
+
     with col1:
         chart_symbol = st.selectbox(
             "Símbolo",
-            ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD"],
-            index=["EURUSD", "GBPUSD", "USDJPY", "AUDUSD"].index(symbol) if symbol in ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD"] else 0,
-            key="chart_symbol"
+            symbols_list,
+            key="chart_symbol_selector"
         )
     
     with col2:
         chart_timeframe = st.selectbox(
             "Timeframe",
-            ["M1", "M5", "M15", "M30", "H1", "H4", "D1"],
-            index=["M1", "M5", "M15", "M30", "H1", "H4", "D1"].index(timeframe) if timeframe in ["M1", "M5", "M15", "M30", "H1", "H4", "D1"] else 2,
-            key="chart_timeframe"
+            tf_list,
+            key="chart_tf_selector"
         )
+
     
     with col3:
         num_candles = st.selectbox(
             "Velas",
             [50, 100, 200, 500],
             index=1,
-            key="num_candles"
+            key="chart_candles_selector"
         )
     
     with col4:
@@ -56,8 +85,9 @@ def render_price_chart(symbol: str = "EURUSD", timeframe: str = "M15",
             "Indicadores",
             ["EMA 20", "EMA 50", "EMA 200", "RSI", "MACD", "Bollinger"],
             default=["EMA 20", "EMA 50"],
-            key="show_indicators"
+            key="chart_ind_selector"
         )
+
     
     # Obtener datos
     df = get_ohlc_data(chart_symbol, chart_timeframe, num_candles)
@@ -76,30 +106,40 @@ def render_price_chart(symbol: str = "EURUSD", timeframe: str = "M15",
     # Mostrar gráfico
     st.plotly_chart(fig, use_container_width=True)
     
+    # Análisis dinámico si no se proporciona uno fijo
+    if llm_analysis is None:
+        with st.spinner(f"Analizando {chart_symbol}..."):
+            llm_analysis = get_current_llm_analysis(chart_symbol, df)
+    
     # Panel de análisis LLM
     if llm_analysis:
         render_llm_analysis_panel(llm_analysis)
+
     
     return chart_symbol, chart_timeframe
 
 
 def get_ohlc_data(symbol: str, timeframe: str, num_candles: int) -> Optional[pd.DataFrame]:
-    """Obtiene datos OHLC de MT5"""
+    """Obtiene datos OHLC de MT5 reusando el conector de la sesión"""
     try:
-        connector = MT5Connector()
-        if not connector.connect():
-            return None
+        if 'mt5_connector' in st.session_state:
+            connector = st.session_state['mt5_connector']
+            if not connector.ensure_connected():
+                connector.connect()
+        else:
+            connector = MT5Connector()
+            if not connector.connect():
+                return None
+            st.session_state['mt5_connector'] = connector
+
         
-        # Mapeo de timeframes
-        tf_map = {
-            "M1": 1, "M5": 5, "M15": 15, "M30": 30,
-            "H1": 60, "H4": 240, "D1": 1440
-        }
-        
-        data = connector.get_rates(symbol, tf_map.get(timeframe, 15), num_candles)
-        connector.disconnect()
+        # Pasar el timeframe como string directamente al conector
+        data = connector.get_rates(symbol, timeframe, num_candles)
+
+        # NOTA: No desconectamos
         
         if data is not None and len(data) > 0:
+
             df = pd.DataFrame(data)
             df['time'] = pd.to_datetime(df['time'], unit='s')
             return df
@@ -365,8 +405,75 @@ def render_llm_analysis_panel(analysis: Dict):
                 st.progress(abs(score), text=f"{factor}: {score:+.2f}")
 
 
-def get_current_llm_analysis(symbol: str) -> Optional[Dict]:
-    """Obtiene el análisis LLM actual para un símbolo"""
-    # Este método se conectaría con el agente de sentimiento/técnico
-    # Por ahora retorna None, se integrará con el sistema de agentes
-    return None
+def get_current_llm_analysis(symbol: str, df: pd.DataFrame) -> Optional[Dict]:
+    """Obtiene el análisis LLM actual para un símbolo combinando técnica y sentimiento"""
+    try:
+        # 1. Análisis Técnico
+        tech_agent = TechnicalAgent()
+        tech_result = tech_agent.analyze_symbol(df, symbol)
+        
+        # 2. Análisis de Sentimiento
+        sentiment_agent = SentimentAgent()
+        storage = get_storage()
+        
+        # Obtener noticias recientes procesadas
+        recent_news = storage.get_recent_news(hours=48, processed=True)
+        news_texts = [n.title for n in recent_news]
+        
+        if news_texts:
+            sent_result = sentiment_agent.analyze_for_symbol(news_texts, symbol)
+        else:
+            sent_result = {"sentiment": "neutral", "score": 0.0, "confidence": 0.0, "relevant_news": 0}
+            
+        # 3. Combinar resultados para la UI
+        # Mapeo de scores a dirección
+        tech_score = tech_result.get("combined_score", 0) if tech_result else 0
+        sent_score = sent_result.get("score", 0) if sent_result else 0
+        combined_score = (tech_score * 0.6) + (sent_score * 0.4)
+        
+        if combined_score > 0.2:
+            direction = "BUY"
+        elif combined_score < -0.2:
+            direction = "SELL"
+        else:
+            direction = "HOLD"
+            
+        # Generar razonamiento dinámico
+        tech_sig = tech_result.get("combined_signal", "HOLD") if tech_result else "HOLD"
+        sent_sig = sent_result.get("sentiment", "neutral") if sent_result else "neutral"
+        relevant_news = sent_result.get("relevant_news", 0) if sent_result else 0
+        
+        reasoning = f"El análisis técnico es {tech_sig} con un score de {tech_score:.2f}. "
+        reasoning += f"El sentimiento de las noticias es {sent_sig} (basado en {relevant_news} noticias relevantes). "
+        
+        if direction == "BUY":
+            reasoning += "La convergencia de factores sugiere una oportunidad de COMPRA."
+        elif direction == "SELL":
+            reasoning += "Los indicadores sugieren una presión bajista, recomendando VENTA."
+        else:
+            reasoning += "No hay una dirección clara en este momento, se recomienda ESPERAR."
+
+        return {
+            'direction': direction,
+            'confidence': min(abs(combined_score), 1.0),
+            'reasoning': reasoning,
+            'factors': {
+                'Técnico': tech_score,
+                'Sentimiento': sent_score,
+                'Fundamental': 0.15  # Placeholder para futuros datos macro
+            }
+        }
+    except Exception as e:
+        logger.warning(f"Error generando análisis dinámico para {symbol}: {e}")
+        # Retornar análisis por defecto en lugar de None
+        return {
+            'direction': 'HOLD',
+            'confidence': 0.0,
+            'reasoning': f'Análisis no disponible temporalmente. Sistema basándose en datos técnicos manuales.',
+            'factors': {
+                'Técnico': 0.0,
+                'Sentimiento': 0.0,
+                'Fundamental': 0.0
+            }
+        }
+

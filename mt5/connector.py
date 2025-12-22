@@ -159,28 +159,40 @@ class MT5Connector:
     
     def disconnect(self):
         """Cierra la conexión con MT5"""
-        if MT5_AVAILABLE:
-            mt5.shutdown()
+        if self.connected and MT5_AVAILABLE:
+            try:
+                mt5.shutdown()
+            except:
+                pass
         self.connected = False
         logger.info("Desconectado de MT5")
+
     
     def ensure_connected(self) -> bool:
         """Asegura que hay conexión activa, reconecta si es necesario"""
         if not self.connected:
             return self.connect()
         
-        # Verificar que la conexión sigue activa
+        # Verificar que la conexión sigue activa sin ser agresivo
         if MT5_AVAILABLE:
             try:
+                # terminal_info() es ligero, sirve como heartbeat
                 terminal_info = mt5.terminal_info()
                 if terminal_info is None:
-                    logger.warning("Conexión perdida, reconectando...")
+                    # Solo intentar reconectar si realmente se perdió la terminal
                     return self._reconnect()
+                
+                # Verificar si está logueado (conectado al servidor)
+                if not terminal_info.connected:
+                     return self._reconnect()
+                     
                 return True
-            except:
+            except Exception as e:
+                logger.debug(f"Error en heartbeat MT5: {e}")
                 return self._reconnect()
         
         return False
+
     
     def _reconnect(self) -> bool:
         """Intenta reconectar a MT5"""
@@ -228,20 +240,28 @@ class MT5Connector:
             return None
         
         tick = mt5.symbol_info_tick(symbol)
-        if tick:\r
-            return Tick(\r
-                symbol=symbol,\r
-                bid=tick.bid,\r
-                ask=tick.ask,\r
-                time=datetime.fromtimestamp(tick.time),\r
-                spread=round((tick.ask - tick.bid) / 0.0001, 1)\r
-            )\r
-        return None\r
-    \r
-    # Alias for compatibility\r
-    def get_symbol_tick(self, symbol: str) -> Optional[Tick]:\r
-        """Alias for get_tick()"""\r
+        if tick:
+            return Tick(
+                symbol=symbol,
+                bid=tick.bid,
+                ask=tick.ask,
+                time=datetime.fromtimestamp(tick.time),
+                spread=round((tick.ask - tick.bid) / 0.0001, 1)
+            )
+        return None
+    
+    # Alias for compatibility
+    def get_symbol_tick(self, symbol: str) -> Optional[Tick]:
+        """Alias for get_tick()"""
         return self.get_tick(symbol)
+
+    def get_symbol_info(self, symbol: str) -> Optional[Any]:
+        """Obtiene información detallada de un símbolo"""
+        if not self.ensure_connected():
+            return None
+        return mt5.symbol_info(symbol)
+
+
     
     def get_rates(
         self, 
@@ -268,6 +288,13 @@ class MT5Connector:
             df['time'] = pd.to_datetime(df['time'], unit='s')
             return df
         
+        return None
+    
+    def get_symbol_data(self, symbol: str, timeframe: str = "M15", count: int = 100) -> Optional[List[Dict[str, Any]]]:
+        """Alias para get_rates que retorna lista de dicts para compatibilidad"""
+        df = self.get_rates(symbol, timeframe, count)
+        if df is not None:
+            return df.to_dict('records')
         return None
     
     def get_positions(self, symbol: Optional[str] = None) -> List[Position]:
@@ -297,6 +324,40 @@ class MT5Connector:
                 profit=pos.profit,
                 open_time=datetime.fromtimestamp(pos.time)
             ))
+        
+        return result
+
+    def get_history_deals(self, days: int = 7) -> List[Dict[str, Any]]:
+        """
+        Obtiene el historial de ejecuciones (deals) de los últimos X días.
+        Útil para detectar trades cerrados.
+        """
+        if not self.ensure_connected():
+            return []
+            
+        from_date = datetime.now() - timedelta(days=days)
+        deals = mt5.history_deals_get(from_date, datetime.now())
+        
+        if deals is None or len(deals) == 0:
+            return []
+            
+        result = []
+        for d in deals:
+            # Solo nos interesan deals que no sean depósitos/retiros (type 0=buy, 1=sell)
+            # Y que tengan un ticket de posición asociado
+            if d.type in [0, 1] and d.position_id != 0:
+                result.append({
+                    "ticket": d.position_id,
+                    "symbol": d.symbol,
+                    "type": "BUY" if d.type == 0 else "SELL",
+                    "volume": d.volume,
+                    "price": d.price,
+                    "profit": d.profit,
+                    "commission": d.commission,
+                    "swap": d.swap,
+                    "timestamp": datetime.fromtimestamp(d.time),
+                    "entry_type": d.entry # 0=EN_ENTRY_IN, 1=EN_ENTRY_OUT, 2=EN_ENTRY_INOUT
+                })
         
         return result
     

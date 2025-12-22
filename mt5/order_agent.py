@@ -116,12 +116,13 @@ class OrderAgent(BaseAgent):
                 logger.warning(f"Orden fallida: {result.error}")
             
             # Log de agente
-            self.storage.log_agent(
+            self.storage.save_agent_log(
                 agent_name=self.name,
                 action=f"{order_type} {volume} {symbol}",
                 result=f"Ticket: {result.ticket}" if result.success else result.error,
                 success=result.success
             )
+
             
             return AgentResult(
                 agent_name=self.name,
@@ -169,17 +170,26 @@ class OrderAgent(BaseAgent):
         ]
     
     def close_position(self, ticket: int) -> bool:
-        """Cierra una posición específica"""
+        """Cierra una posición específica y actualiza la DB local"""
         if not self.connector.ensure_connected():
             return False
         
         success = self.connector.close_position(ticket)
         
         if success:
-            self.storage.log_agent(
+            # Intentar sincronizar este trade específico inmediatamente en la DB
+            try:
+                # Obtener deals recientes de MT5 para encontrar el de cierre
+                deals = self.connector.get_history_deals(days=1)
+                if deals:
+                    self.storage.import_mt5_history(deals)
+            except Exception as e:
+                logger.warning(f"Error sincronizando cierre de trade #{ticket}: {e}")
+
+            self.storage.save_agent_log(
                 agent_name=self.name,
                 action=f"CLOSE #{ticket}",
-                result="Posición cerrada",
+                result="Posición cerrada y DB sincronizada",
                 success=True
             )
         

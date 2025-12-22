@@ -9,7 +9,7 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from mt5.connector import MT5Connector
+from mt5.connector import MT5Connector, Position
 from mt5.order_agent import OrderAgent
 
 
@@ -89,7 +89,7 @@ def render_new_order_form():
         if st.button(
             f"🚀 Ejecutar {order_type}",
             type="primary",
-            use_container_width=True,
+            width='stretch',
             key="execute_order"
         ):
             execute_order(
@@ -109,16 +109,17 @@ def render_quick_actions():
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        if st.button("🔄 Break-Even Todo", use_container_width=True, key="breakeven_all"):
-            apply_breakeven_all()
+        if st.button("💰 Cerrar Profit", width='stretch', key="close_profit"):
+            close_positions_by_profit("profit")
     
     with col2:
-        if st.button("📏 Trailing Stop", use_container_width=True, key="trailing_all"):
-            apply_trailing_all()
+        if st.button("📉 Cerrar Loss", width='stretch', key="close_loss"):
+            close_positions_by_profit("loss")
     
     with col3:
-        if st.button("🚨 Cerrar Todo", type="primary", use_container_width=True, key="close_all"):
+        if st.button("🚨 Cerrar Todo", type="primary", width='stretch', key="close_all"):
             close_all_positions()
+
     
     st.divider()
     
@@ -160,14 +161,15 @@ def render_position_management():
         return
     
     positions = connector.get_positions()
-    connector.disconnect()
+    # NOTA: No desconectamos aquí - el conector se comparte en session_state
     
     if not positions:
         st.info("No hay posiciones abiertas para gestionar")
         return
     
     for pos in positions:
-        with st.expander(f"#{pos.ticket} - {pos.symbol} {'🟢 BUY' if pos.type == 0 else '🔴 SELL'}"):
+        with st.expander(f"#{pos.ticket} - {pos.symbol} {'🟢 BUY' if pos.type == 'BUY' else '🔴 SELL'}"):
+
             col1, col2, col3 = st.columns(3)
             
             with col1:
@@ -175,8 +177,9 @@ def render_position_management():
                 st.metric("Profit", f"€{pos.profit:.2f}")
             
             with col2:
-                st.metric("Precio Apertura", f"{pos.price_open:.5f}")
-                st.metric("Precio Actual", f"{pos.price_current:.5f}")
+                st.metric("Precio Apertura", f"{pos.open_price:.5f}")
+                st.metric("Precio Actual", f"{pos.current_price:.5f}")
+
             
             with col3:
                 st.metric("SL", f"{pos.sl:.5f}" if pos.sl > 0 else "No definido")
@@ -188,11 +191,14 @@ def render_position_management():
             
             with col1:
                 if st.button("🔄 Break-Even", key=f"be_{pos.ticket}"):
-                    apply_breakeven(pos.ticket)
+                    if apply_breakeven_logic(pos):
+                        st.success(f"BE aplicado a #{pos.ticket}")
             
             with col2:
                 if st.button("📏 Trailing", key=f"tr_{pos.ticket}"):
-                    apply_trailing(pos.ticket)
+                    if apply_trailing_logic(pos, 30):
+                        st.success(f"Trailing activo en #{pos.ticket}")
+
             
             with col3:
                 partial = st.number_input(
@@ -206,19 +212,19 @@ def render_position_management():
             
             with col4:
                 if st.button("❌ Cerrar", key=f"close_{pos.ticket}"):
-                    close_position(pos.ticket, partial / 100)
+                    if close_position_executed(pos.ticket):
+                        st.rerun()
+
 
 
 def get_connector() -> Optional[MT5Connector]:
-    """Obtiene conexión MT5"""
-    try:
-        connector = MT5Connector()
-        if connector.connect():
+    """Obtiene conexión MT5 desde la sesión"""
+    if 'mt5_connector' in st.session_state:
+        connector = st.session_state['mt5_connector']
+        if connector.ensure_connected():
             return connector
-        return None
-    except Exception as e:
-        st.error(f"Error conectando a MT5: {e}")
-        return None
+    return None
+
 
 
 def execute_order(symbol: str, order_type: str, volume: float, 
@@ -227,8 +233,9 @@ def execute_order(symbol: str, order_type: str, volume: float,
     
     connector = get_connector()
     if not connector:
-        st.error("❌ No se pudo conectar a MT5")
+        st.error("❌ No hay conexión activa con MT5 en la sesión.")
         return
+
     
     try:
         # Obtener precio actual
@@ -240,43 +247,26 @@ def execute_order(symbol: str, order_type: str, volume: float,
         price = tick.ask if order_type == "BUY" else tick.bid
         point = connector.get_symbol_info(symbol).point
         
-        # Calcular SL y TP
-        sl = 0.0
-        tp = 0.0
-        
-        if sl_pips:
-            if order_type == "BUY":
-                sl = price - (sl_pips * point * 10)
-            else:
-                sl = price + (sl_pips * point * 10)
-        
-        if tp_pips:
-            if order_type == "BUY":
-                tp = price + (tp_pips * point * 10)
-            else:
-                tp = price - (tp_pips * point * 10)
-        
-        # Crear orden
+        # Ejecutar orden usando el agente
         order_agent = OrderAgent()
-        result = order_agent.place_order(
-            symbol=symbol,
-            order_type=order_type.lower(),
-            volume=volume,
-            sl=sl,
-            tp=tp
-        )
+        result_agent = order_agent.execute({
+            "symbol": symbol,
+            "type": order_type.upper(),
+            "volume": volume,
+            "sl_pips": sl_pips,
+            "tp_pips": tp_pips
+        })
         
-        if result and result.get('success'):
-            st.success(f"✅ Orden {order_type} ejecutada: {symbol} @ {price:.5f}")
+        if result_agent.success:
+            st.success(f"✅ Orden {order_type} ejecutada: {symbol} @ {result_agent.data.get('price', 0):.5f}")
             st.balloons()
         else:
-            st.error(f"❌ Error ejecutando orden: {result.get('error', 'Desconocido')}")
+            st.error(f"❌ Error ejecutando orden: {result_agent.error}")
+
     
     except Exception as e:
         st.error(f"❌ Error: {e}")
-    
-    finally:
-        connector.disconnect()
+
 
 
 def close_all_positions():
@@ -298,47 +288,128 @@ def close_all_positions():
         closed = 0
         
         for pos in positions:
-            result = order_agent.close_position(pos.ticket)
-            if result and result.get('success'):
+            if order_agent.close_position(pos.ticket):
                 closed += 1
+
         
         st.success(f"✅ Cerradas {closed} de {len(positions)} posiciones")
     
     except Exception as e:
         st.error(f"❌ Error: {e}")
+
+
+
+def close_positions_by_profit(profit_type: str):
+    """Cierra posiciones filtrando por profit (positivo o negativo)"""
+    connector = get_connector()
+    if not connector:
+        st.error("❌ No se pudo conectar a MT5")
+        return
     
-    finally:
-        connector.disconnect()
+    try:
+        positions = connector.get_positions()
+        if not positions:
+            st.info("No hay posiciones para cerrar")
+            return
+            
+        order_agent = OrderAgent()
+        closed = 0
+        target_positions = []
+        
+        for pos in positions:
+            if profit_type == "profit" and pos.profit > 0:
+                target_positions.append(pos)
+            elif profit_type == "loss" and pos.profit < 0:
+                target_positions.append(pos)
+        
+        if not target_positions:
+            st.info(f"No hay posiciones en {'Garantía' if profit_type == 'profit' else 'Pérdida'} para cerrar")
+            return
+            
+        for pos in target_positions:
+            if order_agent.close_position(pos.ticket):
+                closed += 1
+                
+        st.success(f"✅ Cerradas {closed} de {len(target_positions)} posiciones en {profit_type}")
+        st.rerun()
+        
+    except Exception as e:
+        st.error(f"❌ Error: {e}")
+
+
+def apply_breakeven_logic(pos: Position) -> bool:
+    """Aplica break-even a una posición (mueve SL al precio de entrada + pequeño buffer)"""
+    order_agent = OrderAgent()
+    # Pequeño buffer para cubrir spread/comisión (ej: 2 pips)
+    symbol_info = order_agent.connector.get_symbol_info(pos.symbol)
+    if not symbol_info:
+        return False
+        
+    point = symbol_info.point
+    buffer = 20 * point # 2 pips
+    
+    if pos.type == "BUY":
+        new_sl = pos.open_price + buffer
+        # Solo mover si el precio actual está lo suficientemente lejos y es una mejora de SL
+        if pos.current_price > new_sl and new_sl > pos.sl:
+            return order_agent.modify_position(pos.ticket, new_sl, pos.tp)
+    else: # SELL
+        new_sl = pos.open_price - buffer
+        if pos.current_price < new_sl and (pos.sl == 0 or new_sl < pos.sl):
+            return order_agent.modify_position(pos.ticket, new_sl, pos.tp)
+            
+    return False
+
+
+def apply_trailing_logic(pos: Position, distance_pips: int = 30) -> bool:
+    """Aplica un trailing stop puntual (un solo paso)"""
+    order_agent = OrderAgent()
+    symbol_info = order_agent.connector.get_symbol_info(pos.symbol)
+    if not symbol_info:
+        return False
+        
+    point = symbol_info.point
+    distance = distance_pips * point * 10
+    
+    if pos.type == "BUY":
+        new_sl = pos.current_price - distance
+        if new_sl > pos.sl:
+            return order_agent.modify_position(pos.ticket, new_sl, pos.tp)
+    else: # SELL
+        new_sl = pos.current_price + distance
+        if pos.sl == 0 or new_sl < pos.sl:
+            return order_agent.modify_position(pos.ticket, new_sl, pos.tp)
+            
+    return False
 
 
 def apply_breakeven_all():
-    """Aplica break-even a todas las posiciones en profit"""
-    st.info("🔄 Aplicando break-even a posiciones en profit...")
-    # TODO: Implementar lógica de break-even
-    st.success("✅ Break-even aplicado")
+    """Aplica break-even a todas las posiciones en profit significativo"""
+    order_agent = OrderAgent()
+    positions = order_agent.connector.get_positions()
+    count = 0
+    for pos in positions:
+        if pos.profit > 0 and apply_breakeven_logic(pos):
+            count += 1
+    st.success(f"✅ BE aplicado a {count} posiciones")
 
 
 def apply_trailing_all():
-    """Aplica trailing stop a todas las posiciones"""
-    config = st.session_state.get('trailing_config', {'distance': 30, 'step': 10})
-    st.info(f"📏 Aplicando trailing stop ({config['distance']} pips)...")
-    # TODO: Implementar lógica de trailing
-    st.success("✅ Trailing stop aplicado")
+    """Aplica trailing stop a todas las posiciones activas"""
+    order_agent = OrderAgent()
+    positions = order_agent.connector.get_positions()
+    count = 0
+    for pos in positions:
+        if apply_trailing_logic(pos):
+            count += 1
+    st.success(f"✅ Trailing aplicado a {count} posiciones")
 
 
-def apply_breakeven(ticket: int):
-    """Aplica break-even a una posición específica"""
-    st.info(f"🔄 Break-even aplicado a #{ticket}")
+def close_position_executed(ticket: int) -> bool:
+    """Ejecuta el cierre de una posición desde la UI"""
+    order_agent = OrderAgent()
+    if order_agent.close_position(ticket):
+        # El cierre puede tardar un poco en reflejarse en MT5
+        return True
+    return False
 
-
-def apply_trailing(ticket: int):
-    """Aplica trailing stop a una posición específica"""
-    st.info(f"📏 Trailing aplicado a #{ticket}")
-
-
-def close_position(ticket: int, percentage: float = 1.0):
-    """Cierra una posición (total o parcial)"""
-    if percentage < 1.0:
-        st.info(f"⚡ Cierre parcial ({percentage*100:.0f}%) de #{ticket}")
-    else:
-        st.info(f"❌ Posición #{ticket} cerrada")
