@@ -162,17 +162,20 @@ def run_backtest():
             # Crear engine
             engine = BacktestEngine(
                 initial_balance=initial_balance,
-                default_lot_size=lot_size,
-                sl_pips=sl_pips,
-                tp_pips=tp_pips
+                spread_pips=1.0
             )
             
+            # Configurar valores por defecto
+            engine.default_lot_size = lot_size
+            engine.default_sl_pips = sl_pips
+            engine.default_tp_pips = tp_pips
+            
             # Ejecutar con datos de ejemplo
-            results = engine.run()
+            result = engine.run(symbol=symbol)
             
             # Guardar resultados en session state
-            st.session_state['bt_results'] = results
-            st.session_state['bt_equity_curve'] = engine.get_equity_curve() if hasattr(engine, 'get_equity_curve') else []
+            st.session_state['bt_results'] = result.to_dict() if hasattr(result, 'to_dict') else result
+            st.session_state['bt_equity_curve'] = result.equity_curve if hasattr(result, 'equity_curve') else []
             st.session_state['bt_trades'] = engine.get_trades() if hasattr(engine, 'get_trades') else []
             
             st.success("✅ Backtest completado!")
