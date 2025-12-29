@@ -579,32 +579,47 @@ def render_memory(storage):
 
 
 def render_signals(storage):
-
-    """Renderiza panel de señales"""
+    """Renderiza panel de señales con vista estable por símbolo"""
     st.subheader("📡 Señales de Trading")
     
-    signals = get_cached_signals(storage) if storage else []
+    # Obtener símbolos activos
+    selected_symbols = st.session_state.get('selected_symbols', ["EURUSD", "GBPUSD"])
+    if not selected_symbols:
+        st.info("Seleccione al menos un símbolo en la barra lateral para ver su estado.")
+        return
+
+    # Obtener señales reales
+    db_signals = get_cached_signals(storage) if storage else []
     
-    if not signals:
-        if st.session_state.get('simulation_mode', False):
-            # Datos de ejemplo solo en modo simulación
-            example_signals = [
-                {"symbol": "EURUSD", "type": "BUY", "strength": 0.72, "score": 0.65, "time": datetime.now()},
-                {"symbol": "GBPUSD", "type": "SELL", "strength": 0.45, "score": -0.38, "time": datetime.now()},
-                {"symbol": "USDJPY", "type": "HOLD", "strength": 0.25, "score": 0.12, "time": datetime.now()},
-            ]
-            for sig in example_signals:
-                render_signal_card(sig)
-        else:
-            st.info("No hay señales recientes. El sistema está analizando los mercados...")
-    else:
-        for sig in signals[:5]:
+    # Mapear señales a símbolos (la más reciente por símbolo)
+    signal_map = {}
+    for sig in db_signals:
+        if sig.symbol not in signal_map:
+            signal_map[sig.symbol] = sig
+
+    # Renderizar tarjetas
+    for symbol in selected_symbols:
+        sig = signal_map.get(symbol)
+        
+        if sig:
+            # Renderizar señal real
             render_signal_card({
                 "symbol": sig.symbol,
                 "type": sig.signal_type,
                 "strength": sig.strength,
                 "score": sig.combined_score,
-                "time": sig.created_at
+                "time": sig.created_at,
+                "extra_data": getattr(sig, 'extra_data', {})
+            })
+        else:
+            # Fallback a HOLD/NEUTRAL profesional
+            render_signal_card({
+                "symbol": symbol,
+                "type": "HOLD",
+                "strength": 0.05,
+                "score": 0.0,
+                "time": datetime.now(),
+                "reasoning": "Esperando configuración óptima de indicadores técnicos y sentimiento."
             })
 
 

@@ -1,14 +1,15 @@
 {
   "symbols": [
     "EURUSD",
-    "GOLD"
+    "GOLD",
+    "USDJPY"
   ],
   "timeframe": "M15",
   "max_risk_percent": 2,
   "max_positions": 3,
   "auto_refresh": true,
   "refresh_interval": 30,
-  "bot_running": false,
+  "bot_running": true,
   "trading_mode": "normal",
   "scalping": {
     "max_positions_per_symbol": 1,
@@ -17,5 +18,5 @@
     "take_profit_pips": 6,
     "max_trade_duration_seconds": 120
   },
-  "last_updated": "2025-12-30T00:31:00.458565"
+  "last_updated": "2025-12-30T00:39:19.034360"
 }
