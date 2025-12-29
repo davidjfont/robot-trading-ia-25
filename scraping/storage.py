@@ -26,7 +26,7 @@ class ScrapedNews(Base):
     title = Column(String(500), nullable=False)
     content = Column(Text)
     url = Column(String(1000))
-    scraped_at = Column(DateTime, default=datetime.now)
+    scraped_at = Column(DateTime, default=datetime.utcnow)
     sentiment = Column(String(20))  # bullish/bearish/neutral
     sentiment_score = Column(Float)  # -1 a 1
     impact = Column(String(20))  # high/medium/low
@@ -46,7 +46,7 @@ class EconomicEvent(Base):
     actual = Column(String(50))
     forecast = Column(String(50))
     previous = Column(String(50))
-    scraped_at = Column(DateTime, default=datetime.now)
+    scraped_at = Column(DateTime, default=datetime.utcnow)
 
 
 class TradingSignal(Base):
@@ -61,7 +61,7 @@ class TradingSignal(Base):
     sentiment_score = Column(Float)
     news_score = Column(Float)
     combined_score = Column(Float)
-    created_at = Column(DateTime, default=datetime.now)
+    created_at = Column(DateTime, default=datetime.utcnow)
     executed = Column(Boolean, default=False)
     extra_data = Column(JSON)
 
@@ -95,7 +95,7 @@ class DailyMemory(Base):
     date = Column(String(20), nullable=False, unique=True)  # YYYY-MM-DD
     summary = Column(Text, nullable=False)
     stats = Column(JSON)
-    created_at = Column(DateTime, default=datetime.now)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 class AgentLog(Base):
@@ -108,7 +108,7 @@ class AgentLog(Base):
     result = Column(Text)
     success = Column(Boolean)
     execution_time_ms = Column(Float)
-    created_at = Column(DateTime, default=datetime.now)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 class SnakeSession(Base):
@@ -120,7 +120,7 @@ class SnakeSession(Base):
     symbol = Column(String(20), nullable=False)
     
     # Configuración de tiempo
-    start_time = Column(DateTime, default=datetime.now)
+    start_time = Column(DateTime, default=datetime.utcnow)
     duration_seconds = Column(Integer, nullable=False)  # Duración pactada (e.g. 30, 60)
     end_time_planned = Column(DateTime, nullable=False)
     
@@ -282,12 +282,32 @@ class Storage:
                 EconomicEvent.scraped_at < cutoff
             ).delete()
             
+            # Cargar firmas existentes (Name+Currency+Time) para evitar duplicados
+            # Solo buscamos en eventos recientes para no cargar toda la DB
+            cutoff_dupes = datetime.now() - timedelta(days=2)
+            recent_events = session.query(EconomicEvent).filter(
+                EconomicEvent.scraped_at >= cutoff_dupes
+            ).all()
+            
+            existing_signatures = set()
+            for ev in recent_events:
+                # Normalizar: Evento + Moneda + Tiempo (que es string)
+                sig = f"{ev.name}_{ev.currency}_{ev.event_time}"
+                existing_signatures.add(sig)
+            
             for item in items:
+                # Construir firma del nuevo item
+                e_time = item.metadata.get("time", "")
+                sig = f"{item.title}_{item.metadata.get('currency', '')}_{e_time}"
+                
+                if sig in existing_signatures:
+                    continue
+                    
                 event = EconomicEvent(
                     name=item.title,
                     currency=item.metadata.get("currency", ""),
                     impact=item.metadata.get("impact", "low"),
-                    event_time=item.metadata.get("time", ""),
+                    event_time=e_time,
                     actual=item.metadata.get("actual", ""),
                     forecast=item.metadata.get("forecast", ""),
                     previous=item.metadata.get("previous", ""),
@@ -295,6 +315,7 @@ class Storage:
                 )
 
                 session.add(event)
+                existing_signatures.add(sig) # Añadir para no duplicar en el mismo batch
                 saved += 1
             
             session.commit()
@@ -307,19 +328,66 @@ class Storage:
         
         return saved
     
-    def get_high_impact_events(self, currency: Optional[str] = None) -> List[EconomicEvent]:
-        """Obtiene eventos de alto impacto"""
+    def get_high_impact_events(self, currency: Optional[str] = None, limit: int = 20) -> List[EconomicEvent]:
+        """Obtiene eventos de alto impacto recientes/futuros"""
         session = self.get_session()
         
         try:
-            query = session.query(EconomicEvent).filter(
-                EconomicEvent.impact == "high"
-            )
+            # 1. Fetch RAW High/Medium Impact events
+            # Fetch a bit more to filter in memory
+            query = session.query(EconomicEvent).order_by(EconomicEvent.id.desc()).limit(1000)
             
             if currency:
                 query = query.filter(EconomicEvent.currency.like(f"%{currency}%"))
             
-            return query.all()
+            raw_events = query.all()
+            
+            # 2. Process, Filter & Dedup in Memory
+            # Capturamos una ventana amplia para asegurar Ayer/Hoy/Mañana
+            start_date = datetime.utcnow() - timedelta(days=3) 
+            
+            valid_events = []
+            seen_keys = set()
+            
+            for ev in raw_events:
+                # Handle event_time type (str vs datetime)
+                et = ev.event_time
+                dt_obj = None
+                
+                if isinstance(et, str):
+                    try:
+                        # Try parsing common formats
+                        # Attempt 1: ISO like '2025-12-29 14:00:00'
+                        dt_obj = datetime.fromisoformat(et.replace('Z', '+00:00'))
+                    except ValueError:
+                         # Fallback if format is weird, maybe ignore filter or include
+                         pass
+                elif isinstance(et, datetime):
+                    dt_obj = et
+                    
+                # Date Filter (if parsed successfully)
+                if dt_obj and dt_obj < start_date:
+                    continue # Skip old events
+                
+                # Dedup Key
+                # Use ONLY Name + Currency to aggressively collapse duplicates of the same event
+                # (e.g. "GDP (QoQ) (Q3)" scraped yesterday vs today)
+                # Since we iterate through a list that came from DB (ordered by ID desc? no, we need to ensure that)
+                # The query was: order_by(EconomicEvent.id.desc()) -> Newest scraped first.
+                key = f"{ev.name}_{ev.currency}"
+                
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    # Store tuple (dt_obj for sorting, event)
+                    valid_events.append((dt_obj or datetime.min, ev))
+            
+            # 3. Sort by Date (Descending - newest/future first)
+            # Use reverse=True for Descending
+            # Extract events
+            final_events = [x[1] for x in valid_events]
+            
+            # Devolvemos un pool mayor para que la UI gestione el filtrado visual
+            return final_events[:200]
             
         finally:
             session.close()
@@ -695,6 +763,19 @@ class Storage:
         except Exception as e:
             session.rollback()
             logger.error(f"Error borrando logs: {e}")
+        finally:
+            session.close()
+
+    def clear_economic_events(self):
+        """Borra todos los eventos económicos"""
+        session = self.get_session()
+        try:
+            session.query(EconomicEvent).delete()
+            session.commit()
+            logger.info("Eventos económicos borrados")
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Error borrando eventos: {e}")
         finally:
             session.close()
 

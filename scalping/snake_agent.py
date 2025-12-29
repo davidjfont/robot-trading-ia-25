@@ -14,6 +14,7 @@ class SnakeAction(Enum):
     CLOSE = "CLOSE"       # Cerrar inmediatamente (tiempo agotado o hipótesis fallida)
     PROTECT = "PROTECT"   # Mover a Break-Even o asegurar ganancia
     ADD = "ADD"           # Reforzar posición (momentum confirmado)
+    RELEASE = "RELEASE"   # Soltar control (tiempo agotado en profit, devolver al usuario)
 
 class SnakeStatus(Enum):
     VALID = "VALID"       # El precio se mueve a favor con velocidad adecuada
@@ -95,10 +96,20 @@ class SnakeAgent:
                  action = SnakeAction.PROTECT
                  reason = "Low Velocity - Securing Profit"
             
-            # Si pasamos el 80% y estamos en profit -> CERRAR (Take the money and run)
+            # Si pasamos el 80% y estamos en profit -> RELEASE (Take the money? No, let it run)
+            # CHANGE: If huge profit, maybe protect, but stick to plan of RELEASE on expiry.
+            # But earlier logic said "Time-Box Limit: Securing Win". 
+            # If we want to restart, we should just let it reach expiry OR Release here.
+            # Let's keep existing logic but change CLOSE to RELEASE if it was "Securing Win" 
+            # UNLESS the user explicitly wants Scalping behavior (Hit and Run).
+            # The user asked: "Snake Agent deveria reiniciarse al acabar el ciclo".
+            # So waiting for expiry is best.
+            
             elif time_progress > 0.8:
-                action = SnakeAction.CLOSE
-                reason = "Time-Box Limit: Securing Win"
+                # Instead of closing, we just wait for expiry to RELEASE.
+                # Or we can RELEASE early if it's very good.
+                action = SnakeAction.HOLD # Let it reach expiry for RELEASE
+                reason = "Time-Box Limit: Holding for Release"
                 
             elif time_progress > 0.4 and current_profit > 10.0:
                  action = SnakeAction.PROTECT
@@ -143,13 +154,15 @@ class SnakeAgent:
     def _decide_on_expiry(self, current_profit: float, pips_diff: float) -> Dict[str, Any]:
         """Decisión cuando el tiempo se ha agotado"""
         if current_profit > 0:
+            # CHANGE: Instead of CLOSE, we RELEASE functionality to user logic (or re-snake)
             return {
-                "action": SnakeAction.CLOSE,
+                "action": SnakeAction.RELEASE,
                 "status": SnakeStatus.VALID,
-                "reason": "Time expired (Profit)",
+                "reason": "Time expired (Profit) -> Released",
                 "confidence": 1.0
             }
         else:
+             # If loss, we stick to hypothesis failure -> CLOSE
              return {
                 "action": SnakeAction.CLOSE,
                 "status": SnakeStatus.FAIL,

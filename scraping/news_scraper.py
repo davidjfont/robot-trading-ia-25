@@ -3,22 +3,26 @@ News Scraper - Scraper para noticias de Forex/Trading
 """
 
 import asyncio
-from typing import List, Optional
-from datetime import datetime
+import pytz
+from typing import List, Dict, Any, Optional
+from datetime import datetime, timedelta, timezone
 from loguru import logger
-from bs4 import BeautifulSoup
+import json
+import requests
 
 from .base_scraper import BaseScraper, ScrapedItem
 
 
 class NewsScraper(BaseScraper):
     """
-    Scraper especializado en noticias de trading forex.
+    Scraper especializado en noticias de trading forex con arquitectura en capas.
     
-    Fuentes soportadas:
-    - Investing.com
-    - FXStreet
-    - DailyFX
+    Fuentes (Pesos):
+    - Reuters (0.4)
+    - Investing.com (0.25)
+    - Yahoo Finance (0.2)
+    - MarketWatch (0.1)
+    - CNBC (0.05)
     """
     
     def __init__(self):
@@ -26,21 +30,58 @@ class NewsScraper(BaseScraper):
         
         self.sources = [
             {
-                "name": "investing",
-                "url": "https://www.investing.com/news/forex-news",
-                "article_selector": ".largeTitle article",
-                "title_selector": "a.title",
+                "name": "reuters",
+                "url": "https://www.reuters.com/markets/",
+                "article_selector": "article",
+                "title_selector": "h3",
                 "summary_selector": "p",
-                "link_selector": "a.title",
+                "link_selector": "a[href]",
+                "time_selector": "time",
+                "weight": 0.4,
                 "enabled": True
             },
             {
-                "name": "fxstreet",
-                "url": "https://www.fxstreet.es/news",
-                "article_selector": "article.fxs_article",
-                "title_selector": "h4 a, h3 a",
-                "summary_selector": "p.fxs_article_text",
-                "link_selector": "h4 a, h3 a",
+                "name": "investing",
+                "url": "https://www.investing.com/news/stock-market-news",
+                "article_selector": "article.js-article-item",
+                "title_selector": "a.title",
+                "summary_selector": "p",
+                "link_selector": "a.title",
+                "time_selector": "span.date",
+                "weight": 0.25,
+                "enabled": True
+            },
+            {
+                "name": "yahoo",
+                "url": "https://finance.yahoo.com/news/",
+                "article_selector": "li.js-stream-content",
+                "title_selector": "h3",
+                "summary_selector": "p",
+                "link_selector": "a[href]",
+                "time_selector": "time",
+                "weight": 0.2,
+                "enabled": True
+            },
+            {
+                "name": "marketwatch",
+                "url": "https://www.marketwatch.com/markets",
+                "article_selector": "div.element--article",
+                "title_selector": "h3.article__headline",
+                "summary_selector": "p.article__summary",
+                "link_selector": "a[href]",
+                "time_selector": "time",
+                "weight": 0.1,
+                "enabled": True
+            },
+            {
+                "name": "cnbc",
+                "url": "https://www.cnbc.com/markets/",
+                "article_selector": "div.Card-standardBreakerCard",
+                "title_selector": "a.Card-title",
+                "summary_selector": None,
+                "link_selector": "a.Card-title",
+                "time_selector": "time",
+                "weight": 0.05,
                 "enabled": True
             }
         ]
@@ -54,21 +95,24 @@ class NewsScraper(BaseScraper):
         
         logger.info(f"Scrapeando {source['name']}: {source['url']}")
         
+        # Iniciar navegador (base scraper maneja el ciclo si usamos run, 
+        # pero NewsScraper.scrape lo maneja manualmente)
         success = await self.navigate(source["url"])
         if not success:
             logger.warning(f"No se pudo acceder a {source['name']}")
             return items
         
         # Esperar un poco para que cargue contenido dinámico
-        await asyncio.sleep(2)
+        await asyncio.sleep(source.get("wait_time", 3))
         
         try:
             # Obtener HTML de la página
+            from bs4 import BeautifulSoup
             content = await self.get_page_content()
             soup = BeautifulSoup(content, 'lxml')
             
             # Buscar artículos
-            articles = soup.select(source["article_selector"])[:10]  # Máximo 10 artículos
+            articles = soup.select(source["article_selector"])[:10]  # Máximo 10 por fuente
             
             logger.debug(f"Encontrados {len(articles)} artículos en {source['name']}")
             
@@ -82,8 +126,16 @@ class NewsScraper(BaseScraper):
                         continue
                     
                     # Extraer resumen
-                    summary_el = article.select_one(source["summary_selector"])
-                    summary = summary_el.get_text(strip=True) if summary_el else ""
+                    summary = ""
+                    if source.get("summary_selector"):
+                        summary_el = article.select_one(source["summary_selector"])
+                        summary = summary_el.get_text(strip=True) if summary_el else ""
+                    
+                    # Extraer tiempo
+                    time_str = ""
+                    if source.get("time_selector"):
+                        time_el = article.select_one(source["time_selector"])
+                        time_str = time_el.get_text(strip=True) if time_el else ""
                     
                     # Extraer link
                     link_el = article.select_one(source["link_selector"])
@@ -91,9 +143,10 @@ class NewsScraper(BaseScraper):
                     if link_el and link_el.get("href"):
                         href = link_el["href"]
                         if href.startswith("/"):
-                            # URL relativa
-                            base = source["url"].split("/")[0:3]
-                            link = "/".join(base) + href
+                            # URL relativa - sacar base de la URL original
+                            parts = source["url"].split("/")
+                            base = parts[0] + "//" + parts[2]
+                            link = base + href
                         else:
                             link = href
                     
@@ -105,18 +158,19 @@ class NewsScraper(BaseScraper):
                         timestamp=datetime.now(),
                         metadata={
                             "type": "news",
-                            "category": "forex"
+                            "source_weight": source["weight"],
+                            "published_time": time_str
                         }
                     )
                     
                     items.append(item)
                     
                 except Exception as e:
-                    logger.debug(f"Error parseando artículo: {e}")
+                    logger.debug(f"Error parseando artículo de {source['name']}: {e}")
                     continue
             
         except Exception as e:
-            logger.error(f"Error scrapeando {source['name']}: {e}")
+            logger.error(f"Error parseando HTML de {source['name']}: {e}")
         
         return items
     
@@ -124,109 +178,221 @@ class NewsScraper(BaseScraper):
         """Scrapea todas las fuentes de noticias configuradas"""
         all_items = []
         
-        for source in self.sources:
-            items = await self.scrape_source(source)
-            all_items.extend(items)
+        try:
+            await self.start()
             
-            # Pequeña pausa entre fuentes
-            await asyncio.sleep(1)
-        
+            for source in self.sources:
+                items = await self.scrape_source(source)
+                all_items.extend(items)
+                
+                # Pausa aleatoria entre fuentes para evitar rate limit
+                import random
+                await asyncio.sleep(random.uniform(2, 5))
+                
+        except Exception as e:
+            logger.error(f"Error en el ciclo de NewsScraper: {e}")
+        finally:
+            await self.stop()
+            
         logger.info(f"Total noticias scrapeadas: {len(all_items)}")
         return all_items
 
 
 class CalendarScraper(BaseScraper):
     """
-    Scraper para calendario económico.
-    
-    Obtiene eventos económicos próximos que pueden afectar el mercado.
+    Scraper para calendario económico (Investing.com) con Stealth 2.0.
     """
     
     def __init__(self):
         super().__init__("CalendarScraper")
-        
         self.calendar_url = "https://www.investing.com/economic-calendar/"
     
     async def scrape(self) -> List[ScrapedItem]:
-        """Scrapea el calendario económico"""
         items = []
-        
-        logger.info(f"Scrapeando calendario económico")
-        
-        success = await self.navigate(self.calendar_url)
-        if not success:
-            logger.warning("No se pudo acceder al calendario económico")
-            return items
-        
-        await asyncio.sleep(3)  # Esperar carga de JS
+        logger.info(f"Scrapeando calendario Investing.com (Stealth 2.0)")
         
         try:
-            content = await self.get_page_content()
-            soup = BeautifulSoup(content, 'lxml')
+            await self.start()
             
-            # Buscar eventos del calendario
-            events = soup.select("tr.js-event-item")[:20]
+            # Aplicar Cookies para forzar idioma inglés
+            await self.set_cookies([
+                {"name": "edition_redirect", "value": "1", "domain": ".investing.com", "path": "/"},
+                {"name": "user_lang", "value": "1", "domain": ".investing.com", "path": "/"}
+            ])
             
-            logger.debug(f"Encontrados {len(events)} eventos")
+            # Navegar con timeout moderado
+            success = await self.navigate(self.calendar_url, wait_selector="#economicCalendarTable")
             
-            for event in events:
-                try:
-                    # Tiempo del evento
-                    time_el = event.select_one("td.time")
-                    event_time = time_el.get_text(strip=True) if time_el else ""
-                    
-                    # País/Moneda
-                    currency_el = event.select_one("td.flagCur")
-                    currency = currency_el.get_text(strip=True) if currency_el else ""
-                    
-                    # Impacto (estrellas)
-                    impact_el = event.select_one("td.sentiment")
-                    impact_count = len(event.select("td.sentiment i.grayFullBullishIcon")) if impact_el else 0
-                    impact = "high" if impact_count >= 3 else "medium" if impact_count == 2 else "low"
-                    
-                    # Nombre del evento
-                    event_name_el = event.select_one("td.event a")
-                    event_name = event_name_el.get_text(strip=True) if event_name_el else ""
-                    
-                    if not event_name:
+            if success:
+                content = await self.get_page_content()
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(content, 'lxml')
+                
+                # Buscar eventos
+                events = soup.select("tr.js-event-item")[:50]
+                logger.debug(f"Encontrados {len(events)} eventos en Investing")
+                
+                for event in events:
+                    try:
+                        ts_attr = event.get('data-event-datetime', '')
+                        event_dt = None
+                        if ts_attr:
+                            try:
+                                event_dt = datetime.strptime(ts_attr, "%Y/%m/%d %H:%M:%S")
+                                # Investing US (lang=1) typically uses EDT/EST. 
+                                # Normalizamos EDT (+4h) a UTC para consistencia.
+                                event_dt = event_dt + timedelta(hours=4)
+                            except:
+                                pass
+                        
+                        if not event_dt:
+                            # Intento final: si el atributo falla, buscar el texto en la celda de tiempo
+                            time_el = event.select_one("td.time")
+                            time_text = time_el.get_text(strip=True).lower() if time_el else ""
+                            
+                            if 'min' in time_text or 'now' in time_text:
+                                import re
+                                match = re.search(r'(\d+)', time_text)
+                                mins = int(match.group(1)) if match else 0
+                                event_dt = datetime.utcnow() + timedelta(minutes=mins)
+                            else:
+                                continue # Sigue siendo desconocido o relativo sin números
+                            
+                        curr_el = event.select_one("td.flagCur")
+                        currency = curr_el.get_text(strip=True) if curr_el else "USD"
+                        
+                        impact_el = event.select_one("td.sentiment")
+                        impact_count = len(event.select("td.sentiment i.grayFullBullishIcon")) if impact_el else 0
+                        impact = "high" if impact_count >= 3 else "medium" if impact_count == 2 else "low"
+                        
+                        # CAPTURAMOS TODO EL IMPACTO (1, 2, 3 ESTRELLAS)
+                        # No filtramos por impact == "low"
+                            
+                        event_el = event.select_one("td.event a")
+                        event_name = event_el.get_text(strip=True) if event_el else ""
+                        
+                        if not event_name:
+                            continue
+                            
+                        actual = event.select_one("td.act").get_text(strip=True) if event.select_one("td.act") else ""
+                        forecast = event.select_one("td.fore").get_text(strip=True) if event.select_one("td.fore") else ""
+                        previous = event.select_one("td.prev").get_text(strip=True) if event.select_one("td.prev") else ""
+                        
+                        item = ScrapedItem(
+                            source="investing_calendar",
+                            title=event_name,
+                            content=f"Currency: {currency} | Impact: {impact} | Forecast: {forecast}",
+                            url=self.calendar_url,
+                            timestamp=datetime.now(),
+                            metadata={
+                                "type": "economic_event",
+                                "currency": currency,
+                                "impact": impact,
+                                "time": event_dt.strftime('%Y-%m-%d %H:%M:%S'),
+                                "actual": actual,
+                                "forecast": forecast,
+                                "previous": previous
+                            }
+                        )
+                        items.append(item)
+                    except:
+                        continue
+            else:
+                logger.warning("Timeout o bloqueo en Investing, activando fallback ForexFactory")
+                
+        except Exception as e:
+            logger.error(f"Error en Investing Scraper: {e}, activando fallback")
+        finally:
+            await self.stop()
+
+        # MERGE SOURCES: Investing + ForexFactory (100% Coverage)
+        ff_items = await self._scrape_forexfactory_fallback()
+        
+        # Combinar deduplicando por firma (Título + Divisa)
+        combined_items = []
+        seen_sigs = set()
+        
+        # Prioridad 1: ForexFactory (Suele tener horas absolutas perfectas)
+        for item in ff_items:
+            sig = f"{item.title}_{item.metadata.get('currency')}_{item.metadata.get('time')}"
+            seen_sigs.add(sig)
+            combined_items.append(item)
+            
+        # Prioridad 2: Investing (Más riqueza de datos como Actual/Forecast)
+        for item in items:
+            sig = f"{item.title}_{item.metadata.get('currency')}_{item.metadata.get('time')}"
+            # Si ya está de FF, solo actualizamos los campos de metadatos si estaban vacíos
+            # pero mantenemos la hora de FF si es absoluta.
+            if sig in seen_sigs:
+                for existing in combined_items:
+                    if f"{existing.title}_{existing.metadata.get('currency')}_{existing.metadata.get('time')}" == sig:
+                        # Enriquecer con datos de Investing si faltan en FF
+                        if not existing.metadata.get("actual") and item.metadata.get("actual"):
+                            existing.metadata["actual"] = item.metadata["actual"]
+                        if not existing.metadata.get("forecast") and item.metadata.get("forecast"):
+                            existing.metadata["forecast"] = item.metadata["forecast"]
+                        if not existing.metadata.get("previous") and item.metadata.get("previous"):
+                            existing.metadata["previous"] = item.metadata["previous"]
+                        break
+            else:
+                seen_sigs.add(sig)
+                combined_items.append(item)
+                
+        return combined_items
+
+    async def _scrape_forexfactory_fallback(self) -> List[ScrapedItem]:
+        """Fallback ultra-fiable usando el feed JSON de ForexFactory"""
+        logger.info("Iniciando Fallback: ForexFactory JSON Feed")
+        items = []
+        json_url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+        
+        try:
+            import requests # Asegurar import local si falló arriba
+            response = requests.get(json_url, timeout=10, headers={
+                "User-Agent": "Mozilla/5.0 (ARAFURA-Bot/1.0)"
+            })
+            if response.status_code == 200:
+                events = response.json()
+                for ev in events:
+                    impact = ev.get("impact", "Low").lower()
+                    # CAPTURAMOS TODO EL IMPACTO (Low, Medium, High)
+                        
+                    date_str = ev.get("date", "")
+                    try:
+                        # ForexFactory JSON is typically EST/EDT (-05:00) or has Z
+                        dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+                        # Forzar a UTC real si tiene offset
+                        if dt.tzinfo:
+                            dt = dt.astimezone(pytz.UTC)
+                        
+                        final_time = dt.strftime('%Y-%m-%d %H:%M:%S')
+                    except:
+                        # RECHAZAR si no es un formato de fecha válido
                         continue
                     
-                    # Valores actual/pronóstico/anterior
-                    actual_el = event.select_one("td.act")
-                    forecast_el = event.select_one("td.fore")
-                    prev_el = event.select_one("td.prev")
-                    
-                    actual = actual_el.get_text(strip=True) if actual_el else ""
-                    forecast = forecast_el.get_text(strip=True) if forecast_el else ""
-                    previous = prev_el.get_text(strip=True) if prev_el else ""
-                    
                     item = ScrapedItem(
-                        source="investing_calendar",
-                        title=event_name,
-                        content=f"Currency: {currency} | Impact: {impact} | Forecast: {forecast} | Previous: {previous}",
-                        url=self.calendar_url,
+                        source="forexfactory_fallback",
+                        title=ev.get("title", "Event"),
+                        content=f"Currency: {ev.get('country')} | Impact: {impact} | Forecast: {ev.get('forecast')}",
+                        url="https://www.forexfactory.com/calendar",
                         timestamp=datetime.now(),
                         metadata={
                             "type": "economic_event",
-                            "currency": currency,
+                            "currency": ev.get("country"),
                             "impact": impact,
-                            "time": event_time,
-                            "actual": actual,
-                            "forecast": forecast,
-                            "previous": previous
+                            "time": final_time,
+                            "actual": "", 
+                            "forecast": ev.get("forecast", ""),
+                            "previous": ev.get("previous", "")
                         }
                     )
-                    
                     items.append(item)
-                    
-                except Exception as e:
-                    logger.debug(f"Error parseando evento: {e}")
-                    continue
-            
+                logger.info(f"Fallback exitoso: {len(items)} eventos recuperados")
         except Exception as e:
-            logger.error(f"Error scrapeando calendario: {e}")
-        
+            logger.error(f"Falla crítica en fallback: {e}")
+            
         return items
+
 
 
 async def main():

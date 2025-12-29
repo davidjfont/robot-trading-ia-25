@@ -334,16 +334,20 @@ class MT5Connector:
         
         return result
 
-    def get_history_deals(self, days: int = 7) -> List[Dict[str, Any]]:
+    def get_history_deals(self, days: int = 7, from_date: Optional[datetime] = None) -> List[Dict[str, Any]]:
         """
-        Obtiene el historial de ejecuciones (deals) de los últimos X días.
-        Útil para detectar trades cerrados.
+        Obtiene el historial de ejecuciones (deals).
+        Puede especificar 'days' (desde hace X días) O 'from_date' (fecha específica).
         """
         if not self.ensure_connected():
             return []
             
-        from_date = datetime.now() - timedelta(days=days)
-        deals = mt5.history_deals_get(from_date, datetime.now())
+        if from_date:
+            start = from_date
+        else:
+            start = datetime.now() - timedelta(days=days)
+            
+        deals = mt5.history_deals_get(start, datetime.now())
         
         if deals is None or len(deals) == 0:
             return []

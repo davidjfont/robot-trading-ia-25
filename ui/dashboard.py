@@ -7,6 +7,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime, timedelta
+import pytz
 import sys
 import os
 from loguru import logger
@@ -201,20 +202,31 @@ st.markdown("""
     
     /* Sticky Navbar */
     .sticky-nav {
-        position: sticky;
-        top: 0;
-        z-index: 999;
-        background: rgba(255, 255, 255, 0.85);
+        position: fixed;
+        top: 3.5rem; /* Ajustado para estar debajo del header de Streamlit */
+        left: 0;
+        right: 0;
+        margin: 0 auto;
+        width: 90%;
+        max-width: 800px;
+        z-index: 99999;
+        background: rgba(255, 255, 255, 0.90);
         backdrop-filter: blur(12px);
         -webkit-backdrop-filter: blur(12px);
-        border-bottom: 1px solid rgba(0,0,0,0.05);
+        border: 1px solid rgba(0,0,0,0.05);
         padding: 10px 20px;
         display: flex;
         gap: 20px;
         justify-content: center;
-        margin-bottom: 20px;
-        border-radius: 0 0 16px 16px;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.02);
+        border-radius: 16px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+        transition: all 0.3s ease;
+    }
+    
+    /* Spacer to prevent content overlap */
+    .nav-spacer {
+        height: 60px;
+        width: 100%;
     }
     
     .nav-link {
@@ -232,13 +244,6 @@ st.markdown("""
         color: var(--primary);
     }
     
-    .section-container {
-        scroll-margin-top: 80px; /* Offset for sticky nav */
-        padding-top: 20px;
-        padding-bottom: 40px;
-        border-bottom: 1px solid rgba(0,0,0,0.03);
-    }
-    
     .section-title {
         font-family: 'Inter', sans-serif;
         font-weight: 700;
@@ -250,7 +255,115 @@ st.markdown("""
         gap: 10px;
     }
 
-</style>
+    /* Filters Interaction */
+    .filter-btn {
+        background: #f1f3f4;
+        border: 1px solid #dadce0;
+        border-radius: 16px;
+        padding: 4px 12px;
+        font-size: 12px;
+        font-weight: 600;
+        color: #5f6368;
+        cursor: pointer;
+        transition: all 0.2s;
+    }
+    .filter-btn-active {
+        background: #e8f0fe;
+        border-color: #1a73e8;
+        color: #1a73e8;
+    }
+    .impact-filter-star {
+        font-size: 14px;
+        cursor: pointer;
+        opacity: 0.4;
+        transition: opacity 0.2s;
+    }
+    .impact-filter-active {
+        opacity: 1;
+    }
+
+    /* --- MARKET NEWS & CALENDAR PREMIUM STYLES --- */
+    .news-card {
+        background: white;
+        border-left: 4px solid var(--primary);
+        border-radius: 8px;
+        padding: 12px 16px;
+        margin-bottom: 12px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+    .news-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    }
+    .news-source-tag {
+        font-size: 10px;
+        text-transform: uppercase;
+        font-weight: 700;
+        letter-spacing: 0.5px;
+        padding: 2px 6px;
+        border-radius: 4px;
+        margin-bottom: 6px;
+        display: inline-block;
+    }
+    .source-reuters { background: #fee2e2; color: #991b1b; }
+    .source-investing { background: #dcfce7; color: #166534; }
+    .source-yahoo { background: #f3e8ff; color: #6b21a8; }
+    .source-marketwatch { background: #fef9c3; color: #854d0e; }
+    .source-cnbc { background: #dbeafe; color: #1e40af; }
+    
+    .news-title {
+        font-weight: 600;
+        font-size: 14px;
+        color: var(--text-dark);
+        line-height: 1.4;
+        margin-bottom: 4px;
+    }
+    .news-meta {
+        font-size: 11px;
+        color: var(--text-gray);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+    
+    .impact-glow-high {
+        box-shadow: 0 0 12px rgba(255, 75, 75, 0.1);
+    }
+    
+    /* ESTADOS POR TIEMPO - PROFESSIONAL OVERHAUL */
+    .status-past { border-left: 5px solid #ff4b4b !important; background: #fff8f8; opacity: 0.85; }
+    .status-today { border-left: 5px solid #00c853 !important; background: #f1fff1; font-weight: 500; }
+    .status-future { border-left: 5px solid #9c27b0 !important; background: #fdf5ff; }
+    .status-tomorrow { border-left: 5px solid #7b1fa2 !important; background: #f3e5f5; }
+
+    .event-ticker-row {
+        display: flex;
+        align-items: center;
+        padding: 10px 16px;
+        border-bottom: 1px solid rgba(0,0,0,0.05);
+        gap: 12px;
+        transition: all 0.2s;
+    }
+    .event-ticker-row:hover { filter: brightness(0.98); }
+    
+    .event-time { font-family: 'Courier New', monospace; font-weight: 700; min-width: 130px; font-size: 13px; color: #333; }
+    .event-currency { font-weight: 800; color: #111; min-width: 45px; font-size: 14px; }
+    .event-name { flex-grow: 1; font-size: 14px; color: #222; }
+    .event-impact-dot { width: 10px; height: 10px; border-radius: 50%; }
+    
+    .countdown-badge {
+        font-size: 11px;
+        font-weight: 800;
+        padding: 3px 8px;
+        border-radius: 6px;
+        white-space: nowrap;
+        text-transform: uppercase;
+    }
+    .badge-past { background: #fee2e2; color: #991b1b; }
+    .badge-today { background: #dcfce7; color: #166534; }
+    .badge-future { background: #f3e8ff; color: #6b21a8; }
+    .badge-tomorrow { background: #f3e5f5; color: #4a148c; }
 """, unsafe_allow_html=True)
 
 
@@ -268,8 +381,31 @@ def get_storage_instance():
 @st.cache_resource
 def get_mt5_connector():
     """Obtiene instancia del conector MT5 con persistencia en la sesión"""
+    import inspect
+    import importlib
+    import mt5.connector
+    
+    # Self-healing: Chequear si la instancia está obsoleta (falta argumento 'from_date')
+    if 'mt5_connector' in st.session_state:
+        connector = st.session_state['mt5_connector']
+        try:
+            sig = inspect.signature(connector.get_history_deals)
+            if 'from_date' not in sig.parameters:
+                st.warning("Detectada versión antigua del conector. Recargando...")
+                try:
+                    connector.disconnect()
+                except:
+                    pass
+                del st.session_state['mt5_connector']
+                # Force module reload to ensure we have new code
+                importlib.reload(mt5.connector)
+        except Exception as e:
+            logger.warning(f"Error verificando firma de conector: {e}")
+
     if 'mt5_connector' not in st.session_state:
         try:
+            # Reload module to be safe
+            importlib.reload(mt5.connector)
             from mt5.connector import MT5Connector
             connector = MT5Connector()
             if connector.connect():
@@ -292,20 +428,7 @@ def get_cached_news(_storage):
 
 @st.cache_data(ttl=10)
 def get_cached_signals(_storage):
-    return _storage.get_latest_signals(limit=5)
-
-@st.cache_data(ttl=300)
-def get_cached_trade_history(_storage):
-    return _storage.get_all_trade_results()
-
-# ---------------------------
-
-@st.cache_data(ttl=60)
-def get_cached_news(_storage):
-    return _storage.get_recent_news(hours=24)
-
-@st.cache_data(ttl=10)
-def get_cached_signals(_storage):
+    # get_recent_signals usa 'hours' y 'symbol', no limit. Traemos últimos 24h y cortamos lista
     signals = _storage.get_recent_signals(hours=24)
     return signals[:5] if signals else []
 
@@ -313,15 +436,13 @@ def get_cached_signals(_storage):
 def get_cached_trade_history(_storage):
     return _storage.get_all_trade_results()
 
+@st.cache_data(ttl=600)
+def get_cached_events(_storage):
+    # Ya gestionamos el límite dentro del storage para Ayer-Hoy-Mañana
+    return _storage.get_high_impact_events()
+
 # ---------------------------
-    
-    # Verificar que siga conectado
-    connector = st.session_state['mt5_connector']
-    if not connector.ensure_connected():
-        if not connector.connect():
-            return None
-            
-    return connector
+
 
 
 
@@ -350,15 +471,13 @@ def render_account_status():
         # NOTA: No desconectamos aquí para mantener la persistencia
         
         if account_info:
-            cols = st.columns(4)
+            cols = st.columns(3)
             metrics = [
                 ("Balance", f"€{account_info.get('balance', 0):,.2f}"),
                 ("Equity", f"€{account_info.get('equity', 0):,.2f}"),
-                ("Margen Libre", f"€{account_info.get('free_margin', 0):,.2f}"),
-                ("Posiciones", len(positions) if positions else 0)
-
+                ("Margen Libre", f"€{account_info.get('free_margin', 0):,.2f}")
             ]
-            
+        
             for i, (label, value) in enumerate(metrics):
                 with cols[i]:
                     st.markdown(f"""
@@ -466,37 +585,41 @@ def render_signal_card(signal):
         icon = "⏸️"
     
     with st.container():
-        col1, col2, col3, col4 = st.columns([2, 1, 1, 2])
+        col1, col2, col3, col4 = st.columns([2, 1.5, 1, 1.5])
         
+        # Calculate Trend/Arrows first
+        score = signal.get("score", 0)
+        if score > 0.6: arrows = "🟢🟢 Strong"
+        elif score > 0.2: arrows = "🟢 Bias"
+        elif score < -0.6: arrows = "🔴 Strong"
+        elif score < -0.2: arrows = "🔴🔴 Bias"
+        else: arrows = "🟦 Neutral"
+
         with col1:
             st.markdown(f"**{signal.get('symbol', 'N/A')}**")
         with col2:
             badge_class = "buy-color" if signal_type == "BUY" else "sell-color" if signal_type == "SELL" else "hold-color"
-            st.markdown(f'<span class="signal-badge {badge_class}">{icon} {signal_type}</span>', unsafe_allow_html=True)
+            # Display Badge AND Trend
+            st.markdown(f'''
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <span class="signal-badge {badge_class}">{icon} {signal_type}</span>
+                    <span style="font-size: 12px; color: #666;">{arrows}</span>
+                </div>
+            ''', unsafe_allow_html=True)
         with col3:
             strength = signal.get("strength", 0) * 100
-            st.markdown(f'<div style="width: 100%;"><div class="metric-label" style="font-size:0.6rem">{strength:.0f}% STRENGTH</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div style="width: 100%;"><div class="metric-label" style="font-size:0.6rem">{strength:.0f}% STR</div></div>', unsafe_allow_html=True)
             st.progress(signal.get("strength", 0))
         with col4:
             st.markdown(f'<div class="metric-label">Confidence</div><div style="font-weight:600; color:var(--text-dark)">{signal.get("score", 0):.3f}</div>', unsafe_allow_html=True)
             
-            # Show reasoning if available
+            # Show reasoning if available (moved from below)
             if "reasoning" in signal:
-                with st.expander("📝 Ver Razonamiento"):
+                with st.expander("📝", expanded=False):
                     st.write(signal["reasoning"])
             elif "extra_data" in signal and signal["extra_data"]:
-                 with st.expander("📝 Detalles"):
+                 with st.expander("📝", expanded=False):
                     st.json(signal["extra_data"])
-            
-            # Show Arrows based on score
-            score = signal.get("score", 0)
-            if score > 0.6: arrows = "🟢🟢🟢 Strong Buy"
-            elif score > 0.2: arrows = "🟢 Buy Bias"
-            elif score < -0.6: arrows = "🔴🔴🔴 Strong Sell"
-            elif score < -0.2: arrows = "🔴 Sell Bias"
-            else: arrows = "🟦 Neutral"
-            
-            st.caption(f"Trend: {arrows}")
 
 
 
@@ -614,64 +737,332 @@ def render_positions():
 
 
 def render_news(storage):
-    """Renderiza eventos económicos y noticias"""
-    st.subheader("📅 Calendario Económico")
-    
+    """Renderiza eventos económicos y noticias con diseño premium y deduplicación"""
     if not storage:
         st.info("📡 Esperando datos... Ejecute run.py")
         return
+
+    # Usar pestañas para organizar
+    tab_calendar, tab_news = st.tabs(["📅 Calendario Maestro", "📰 Pulso del Mercado (Live)"])
     
-    # Obtener eventos cacheado (usamos news cache wrapper logic or create new one? reuse news cache for now if generic, but logic differs)
-    # Actually, let's keep it simple. The user asked to solve freezing.
-    # storage.get_high_impact_events is fast? likely DB query.
-    # storage.get_recent_news is cached via get_cached_news.
-    
-    # We didn't make get_cached_events. Let's start with news.
-    # events = storage.get_high_impact_events() <-- Potentially slow. 
-    # Let's optimize news part first.
-    
-    events = storage.get_high_impact_events()
-    
-    # También intentar noticias
-    news = get_cached_news(storage)
-    
-    if not events and not news:
-        st.info("📡 Sin eventos. Ejecute run.py para scraping")
-        return
-    
-    # Mostrar eventos económicos
-    if events:
-        impact_icons = {"high": "🔴", "medium": "🟡", "low": "🟢"}
+    with tab_calendar:
+        col_c1, col_c2, col_c3 = st.columns([2, 2, 1])
+        with col_c1:
+            st.markdown("### 🗓️ Eventos de Impacto")
         
-        for event in events[:10]:
-            currency = getattr(event, 'currency', 'USD') or 'USD'
-            impact = getattr(event, 'impact', 'low') or 'low'
-            icon = impact_icons.get(impact.lower(), "⚪")
-            name = getattr(event, 'name', 'Evento') or 'Evento'
-            name_short = name[:50] + "..." if len(name) > 50 else name
+        # Filtros de persistencia en session_state
+        if 'cal_filter_day' not in st.session_state: st.session_state.cal_filter_day = ["HOY"]
+        if 'cal_filter_impact' not in st.session_state: st.session_state.cal_filter_impact = [1, 2, 3]
+
+        with col_c2:
+            fcols = st.columns(3)
+            days = ["AYER", "HOY", "MAÑANA"]
+            for i, d in enumerate(days):
+                active = d in st.session_state.cal_filter_day
+                if fcols[i].button(d, key=f"btn_day_{d}", use_container_width=True, 
+                                 type="primary" if active else "secondary"):
+                    if active:
+                        if len(st.session_state.cal_filter_day) > 1:
+                            st.session_state.cal_filter_day.remove(d)
+                    else:
+                        st.session_state.cal_filter_day.append(d)
+                    st.rerun()
             
-            with st.expander(f"{icon} {currency} - {name_short}"):
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    actual = getattr(event, 'actual', '-') or '-'
-                    st.metric("Actual", actual)
-                with col2:
-                    forecast = getattr(event, 'forecast', '-') or '-'
-                    st.metric("Pronóstico", forecast)
-                with col3:
-                    previous = getattr(event, 'previous', '-') or '-'
-                    st.metric("Anterior", previous)
+            sc1, sc2, sc3 = st.columns(3)
+            stars = ["⭐", "⭐⭐", "⭐⭐⭐"]
+            for i in range(3):
+                with [sc1, sc2, sc3][i]:
+                    active = (i+1) in st.session_state.cal_filter_impact
+                    if st.button(stars[i], key=f"btn_star_{i+1}", use_container_width=True,
+                               type="primary" if active else "secondary"):
+                        if active:
+                            if len(st.session_state.cal_filter_impact) > 1:
+                                st.session_state.cal_filter_impact.remove(i+1)
+                        else:
+                            st.session_state.cal_filter_impact.append(i+1)
+                        st.rerun()
+
+        with col_c3:
+            if st.button("🚀 Scrape Now", key="scrape_events_now", use_container_width=True):
+                with st.spinner("Scrapeando nuevas fuentes..."):
+                    import subprocess
+                    try:
+                        subprocess.Popen([sys.executable, "force_scrape.py"])
+                        st.success("Scrapeo iniciado en segundo plano")
+                        get_cached_events.clear()
+                    except Exception as e:
+                        st.error(f"Error al iniciar scrapeo: {e}")
+            
+            if st.button("🔄 Refrescar", key="refresh_events", use_container_width=True):
+                get_cached_events.clear()
+                st.rerun()
+        
+        events = get_cached_events(storage)
+        if not events:
+            st.info("No hay eventos programados para hoy.")
+        else:
+            # DEDUPLICACIÓN AGRESIVA EN UI
+            unique_events = {}
+        if not events:
+            st.info("No hay eventos programados (Ayer-Hoy-Mañana).")
+        else:
+            # 1. NORMALIZACIÓN Y PROCESAMIENTO (AYER-HOY-MAÑANA)
+            madrid_tz = pytz.timezone('Europe/Madrid')
+            now_madrid = datetime.now(tz=madrid_tz)
+            
+            # Límites de ventana (Día completo)
+            yesterday_start = (now_madrid - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            tomorrow_end = (now_madrid + timedelta(days=1)).replace(hour=23, minute=59, second=59, microsecond=999999)
+            
+            processed_data = []
+            seen_signatures = set()
+
+            for ev in events:
+                time_val = getattr(ev, 'event_time', '')
+                if not time_val: continue
                 
-                event_time = getattr(event, 'event_time', 'N/A') or 'N/A'
-                st.caption(f"🕐 {event_time} | Impacto: {impact.upper()}")
-    
-    # Si hay noticias también, mostrarlas
-    if news:
-        st.divider()
-        st.caption("📰 Noticias recientes:")
-        for item in news[:3]:
-            title = getattr(item, 'title', 'Sin título') or 'Sin título'
-            st.write(f"• {title[:70]}...")
+                try:
+                    # Parsing flexible
+                    dt_event = None
+                    ts_str = str(time_val).lower().strip()
+                    scraped_at = getattr(ev, 'scraped_at', now_madrid.replace(tzinfo=None))
+                    
+                    # Normalizar scraped_at a Madrid
+                    dt_scraped = pytz.utc.localize(scraped_at).astimezone(madrid_tz) if scraped_at.tzinfo is None else scraped_at.astimezone(madrid_tz)
+
+                    if hasattr(time_val, 'strftime'):
+                        dt_event = time_val
+                    elif 'min' in ts_str or 'ahora' in ts_str or 'now' in ts_str:
+                        # Caso especial: tiempo relativo
+                        # Solo es válido si se scrapeó hace poco (< 24h)
+                        if (now_madrid - dt_scraped).total_seconds() > 86400:
+                            continue # Stale relative time
+                            
+                        # Extraer minutos si existen
+                        import re
+                        match = re.search(r'(\d+)', ts_str)
+                        if match:
+                            mins = int(match.group(1))
+                            dt_event = dt_scraped + timedelta(minutes=mins)
+                        else:
+                            dt_event = dt_scraped 
+                    else:
+                        ts_str_clean = ts_str.replace('z', '+00:00').upper()
+                        try:
+                            if ' ' in ts_str_clean and '/' in ts_str_clean:
+                                dt_event = datetime.strptime(ts_str_clean, "%Y/%m/%d %H:%M:%S")
+                            else:
+                                dt_event = datetime.fromisoformat(ts_str_clean)
+                        except:
+                            # Fallback final: No podemos determinar la hora
+                            continue
+                    
+                    if dt_event.tzinfo is None:
+                        dt_event = pytz.utc.localize(dt_event)
+                    
+                    dt_mad = dt_event.astimezone(madrid_tz)
+                    
+                    # FILTRO DE VENTANA (Ayer, Hoy, Mañana)
+                    if not (yesterday_start <= dt_mad <= tomorrow_end):
+                        continue
+                        
+                    # DEDUPLICACIÓN ESTRICTA (Minuto a minuto)
+                    # Usamos H:M para evitar que micro-segundos generen duplicados falsos
+                    sig = f"{ev.name}_{ev.currency}_{dt_mad.strftime('%Y-%m-%d %H:%M')}"
+                    if sig in seen_signatures: continue
+                    seen_signatures.add(sig)
+                    
+                    # LÓGICA DE ESTADOS Y COLORES
+                    status = ""
+                    time_display = ""
+                    countdown_text = ""
+                    badge_class = ""
+                    
+                    diff_min = int((dt_mad - now_madrid).total_seconds() / 60)
+                    is_today = dt_mad.date() == now_madrid.date()
+                    is_yesterday = dt_mad.date() == (now_madrid - timedelta(days=1)).date()
+                    is_tomorrow = dt_mad.date() == (now_madrid + timedelta(days=1)).date()
+                    
+                    if diff_min < -10:
+                        status = "status-past"
+                        time_display = dt_mad.strftime('%H:%M')
+                        countdown_text = f"Hace {abs(diff_min)//60}h" if abs(diff_min) > 60 else f"Hace {abs(diff_min)}m"
+                        if not is_today:
+                            time_display = dt_mad.strftime('%m/%d %H:%M')
+                        badge_class = "badge-past"
+                    elif -10 <= diff_min <= 0:
+                        status = "status-today"
+                        time_display = dt_mad.strftime('%H:%M')
+                        countdown_text = "AHORA"
+                        badge_class = "badge-today"
+                    elif diff_min > 0 and is_today:
+                        status = "status-today"
+                        time_display = dt_mad.strftime('%H:%M')
+                        countdown_text = f"En {diff_min} min" if diff_min < 60 else f"En {diff_min//60}h"
+                        badge_class = "badge-today"
+                    else:
+                        status = "status-tomorrow" if is_tomorrow else "status-future"
+                        time_display = dt_mad.strftime('%m/%d - %H:%M')
+                        countdown_text = f"En {diff_min//60}h"
+                        badge_class = "badge-tomorrow" if is_tomorrow else "badge-future"
+
+                    processed_data.append({
+                        'obj': ev,
+                        'dt': dt_mad,
+                        'status': status,
+                        'time_display': time_display,
+                        'countdown': countdown_text,
+                        'badge_class': badge_class,
+                        'impact': (ev.impact or 'low').lower()
+                    })
+                except Exception as e:
+                    logger.error(f"Error procesando evento calendario: {e}")
+                    continue
+
+            # 2. FILTRAR POR USER SELECTION
+            f_day = st.session_state.cal_filter_day
+            f_impact = st.session_state.cal_filter_impact
+            
+            filtered_data = []
+            for item in processed_data:
+                # Mapeo de impacto a número
+                imp_num = 3 if item['impact'] == "high" else 2 if item['impact'] == "medium" else 1
+                if imp_num not in f_impact: continue
+                
+                # Filtro de día (Soporta múltiple selección)
+                dt_mad = item['dt']
+                day_match = False
+                if "HOY" in f_day and dt_mad.date() == now_madrid.date(): day_match = True
+                if "AYER" in f_day and dt_mad.date() == (now_madrid - timedelta(days=1)).date(): day_match = True
+                if "MAÑANA" in f_day and dt_mad.date() == (now_madrid + timedelta(days=1)).date(): day_match = True
+                
+                if not day_match: continue
+                filtered_data.append(item)
+
+            # 3. ORDENAR Y DEDUPLICAR TÍTULOS (Opcional: Agrupar si son el mismo)
+            filtered_data.sort(key=lambda x: x['dt'])
+            
+            last_title = None
+            last_date = None
+            
+            # Helper para nombres de días en español
+            dias_es = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+            meses_es = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+
+            # 4. RENDERIZAR
+            for item in filtered_data:
+                ev = item['obj']
+                dt_mad = item['dt']
+                
+                # HEADERS DE FECHA (Estilo Mockup)
+                current_date = dt_mad.date()
+                if current_date != last_date:
+                    dia_semana = dias_es[dt_mad.weekday()]
+                    mes = meses_es[dt_mad.month - 1]
+                    
+                    label = ""
+                    if current_date == now_madrid.date(): label = " - HOY"
+                    elif current_date == (now_madrid - timedelta(days=1)).date(): label = " - AYER"
+                    elif current_date == (now_madrid + timedelta(days=1)).date(): label = " - MAÑANA"
+                    
+                    header_text = f"{dia_semana.upper()}, {dt_mad.day} {mes.upper()}{label}"
+                    st.markdown(f'<div style="background: #f1f3f4; padding: 10px 16px; border-left: 5px solid #1a73e8; margin-top: 20px; margin-bottom: 10px; font-weight: 800; color: #202124; font-size: 14px; letter-spacing: 0.5px; border-radius: 4px;">'
+                                f'{header_text}'
+                                f'</div>', unsafe_allow_html=True)
+                    last_date = current_date
+                    last_title = None # Reset title grouping on new day
+
+                # Si el título se repite exactamente igual al anterior, lo atenuamos o simplificamos
+                is_duplicate = (ev.name == last_title)
+                last_title = ev.name
+                
+                display_name = f'<span style="opacity: 0.5;">↳</span> {ev.name}' if is_duplicate else ev.name
+                
+                impact_raw = item['impact']
+                if impact_raw == "high": stars = "⭐⭐⭐"; dot_color = "#ff4b4b"
+                elif impact_raw == "medium": stars = "⭐⭐"; dot_color = "#ffa500"
+                else: stars = "⭐"; dot_color = "#4fc3f7"
+                
+                glow = "impact-glow-high" if impact_raw == "high" else ""
+                
+                # Resultado final (Actual / Forecast / Prev)
+                results_html = ""
+                if ev.actual:
+                    # Comparar actual con forecast si existe
+                    try:
+                        # Limpieza básica para comparación numérica
+                        def clean_val(v):
+                            if not v: return 0.0
+                            s = str(v).replace('%','').replace('K','').replace('M','').replace(',','').replace('B','').strip()
+                            return float(s) if s else 0.0
+                            
+                        act_f = clean_val(ev.actual)
+                        for_f = clean_val(ev.forecast) if ev.forecast else act_f
+                        res_color = "#137333" if act_f >= for_f else "#c5221f"
+                    except:
+                        res_color = "#444"
+                    
+                    prev_disp = f'<span style="color: #666; font-weight: 400; font-size: 11px;" title="Prev">[{ev.previous or "-"}]</span>' if ev.previous else ""
+                    
+                    results_html = f'<div style="display: flex; gap: 8px; font-size: 13px; font-weight: 700; justify-content: flex-end; align-items: center;"><span style="color: {res_color};" title="Actual">{ev.actual}</span><span style="color: #777; font-weight: 400; font-size: 12px;" title="Forecast">({ev.forecast or "-"})</span>{prev_disp}</div>'
+                else:
+                    prev_disp = f'<span style="color: #aaa; font-size: 10px;">[{ev.previous or "-"}]</span>' if ev.previous else ""
+                    results_html = f'<div style="text-align: right; display: flex; gap: 6px; justify-content: flex-end; align-items: center;"><span style="color: #999; font-size: 11px;">{ev.forecast or "-"} (exp)</span>{prev_disp}</div>'
+
+                st.markdown(f'<div class="event-ticker-row {item["status"]} {glow}">'
+                            f'<div class="event-time" title="MADRID: {item["time_display"]}">🕒 {item["time_display"]}</div>'
+                            f'<div style="min-width: 90px;"><span class="countdown-badge {item["badge_class"]}">{item["countdown"]}</span></div>'
+                            f'<div class="event-impact-dot" style="background: {dot_color};"></div>'
+                            f'<div style="font-size: 11px; min-width: 55px; white-space: nowrap;">{stars}</div>'
+                            f'<div class="event-currency" style="width: 40px; font-weight: bold;">{ev.currency or "USD"}</div>'
+                            f'<div class="event-name" style="{"opacity: 0.7;" if is_duplicate else ""}">{display_name}</div>'
+                            f'<div style="min-width: 120px;">{results_html}</div>'
+                            f'</div>', unsafe_allow_html=True)
+
+    with tab_news:
+        col_n1, col_n2 = st.columns([3, 1])
+        with col_n1:
+            st.markdown("### 📡 Noticias Institucionales (Layered)")
+        with col_n2:
+            if st.button("🔄 Actualizar", key="refresh_news_live"):
+                get_cached_news.clear()
+                st.rerun()
+        
+        news_items = get_cached_news(storage)
+        if not news_items:
+            st.info("Sin noticias recientes. El scraper está en modo escucha...")
+        else:
+            # DEDUPLICACIÓN POR TÍTULO
+            unique_news = {}
+            for item in news_items:
+                title_slug = item.title.strip().lower()[:100]
+                if title_slug not in unique_news:
+                    unique_news[title_slug] = item
+            
+            # Mostrar últimos 15
+            display_news = list(unique_news.values())[:15]
+            
+            for item in display_news:
+                source = (item.source or 'generic').lower()
+                
+                # Localizar tiempo de noticia a Madrid
+                madrid_tz = pytz.timezone('Europe/Madrid')
+                ts = item.scraped_at if hasattr(item, 'scraped_at') else datetime.utcnow()
+                if ts.tzinfo is None:
+                    ts = pytz.utc.localize(ts)
+                ts_madrid = ts.astimezone(madrid_tz)
+                time_display = ts_madrid.strftime('%d/%m %H:%M')
+                
+                st.markdown(f"""
+                <div class="news-card">
+                    <span class="news-source-tag source-{source}">{source}</span>
+                    <div class="news-title">{item.title}</div>
+                    <div class="news-meta">
+                        <span>🕒 {time_display}</span>
+                        <a href="{item.url}" target="_blank" style="text-decoration: none; color: var(--primary); font-weight: 600;">Leer →</a>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
 
 
 def render_performance_chart(storage):
@@ -679,31 +1070,75 @@ def render_performance_chart(storage):
     col_h1, col_h2 = st.columns([3, 1])
     with col_h1:
         st.subheader("📈 Rendimiento")
-    with col_h2:
-        if st.button("🔄 Sincronizar Historial", key="sync_history"):
-            st.session_state['force_sync'] = True
     
     if not storage:
         st.info("Storage no disponible para cargar historial")
         return
         
-    # Sincronizar con MT5 si hay conector disponible
-    connector = get_mt5_connector()
-    if connector:
-        try:
-            # Sincronizar últimos 7 días por defecto, o 30 si se fuerza o si la DB está vacía
-            db_empty = len(storage.get_trade_history(limit=1)) == 0
-            days = 30 if (st.session_state.get('force_sync') or db_empty) else 7
+    # --- Sync & Reset Controls ---
+    with st.expander("⚙️ Opciones de Historial (Sincronización y Reset)", expanded=False):
+        c1, c2, c3 = st.columns([1.5, 1, 1])
+        
+        with c1:
+            # Date Picker for custom sync
+            default_date = datetime.now() - timedelta(days=30)
+            sync_date = st.date_input("Sincronizar desde:", value=default_date)
             
-            deals = connector.get_history_deals(days=days)
+        with c2:
+            st.write("") # Spacer
+            st.write("") 
+            if st.button("🔄 Sincronizar Selección"):
+                st.session_state['force_sync_date'] = sync_date
+                st.session_state['force_sync_type'] = "date"
+        
+        with c3:
+            st.write("") # Spacer
+            st.write("")
+            if st.button("🌍 Sincronizar TOTAL"):
+                st.session_state['force_sync_type'] = "all"
+        
+        st.divider()
+        if st.button("🗑️ RESETEAR / PONER A CERO", type="primary"):
+            storage.clear_trade_history()
+            st.cache_data.clear()
+            st.success("Historial eliminado completamente.")
+            st.rerun()
+
+    # --- Sync Logic Execution ---
+    connector = get_mt5_connector()
+    sync_type = st.session_state.get('force_sync_type')
+    
+    if connector and sync_type:
+        try:
+            deals = []
+            if sync_type == "all":
+                # Sync last 365 days
+                deals = connector.get_history_deals(days=365)
+                msg = "Historial TOTAL (365 días) sincronizado."
+            elif sync_type == "date":
+                # Sync from specific date
+                f_date = st.session_state.get('force_sync_date')
+                if f_date:
+                    # Convert date to datetime
+                    dt_start = datetime.combine(f_date, datetime.min.time())
+                    deals = connector.get_history_deals(from_date=dt_start)
+                    msg = f"Historial desde {f_date} sincronizado."
+            
+            # Normal cleanup logic
             if deals:
                 storage.import_mt5_history(deals)
-            
-            if st.session_state.get('force_sync'):
-                st.session_state['force_sync'] = False
-                st.success(f"Historial sincronizado (últimos {days} días)")
+                st.success(msg)
+                # Clear trigger
+                st.session_state['force_sync_type'] = None
+                st.cache_data.clear()
+                st.rerun()
+            else:
+                st.warning("No se encontraron trades en el periodo seleccionado en MT5.")
+                st.session_state['force_sync_type'] = None
+                
         except Exception as e:
-            logger.error(f"Error sincronizando trades en dashboard: {e}")
+            logger.error(f"Error sincronizando trades: {e}")
+            st.error(f"Error de sincronización: {e}")
             
             
     # Obtener historial de trades cerrados
@@ -857,16 +1292,24 @@ def render_stats(storage):
     st.subheader("📊 Estadísticas (30 días)")
     
     if storage:
-        # Use cached history to calc stats on fly or add get_cached_stats?
-        # get_trade_stats is aggregated. Let's leave it direct or cache it?
-        # Let's use get_cached_trade_history logic inside render_stats or just leave it if it's fast.
-        # storage.get_trade_stats might be heavy. Let's modify render_stats to use cached history if possible 
-        # OR add a cached wrapper for stats.
-        # But for now, let's assume get_trade_stats is fast enough or just leave it. 
-        # Wait, the tool definition earlier had get_cached_trade_history but no get_cached_stats.
-        # Let's use get_cached_trade_history and recalculate or just keep direct call if simple.
-        # Actually I'll wrap it in a try block per earlier attempts to use analytics.
-        stats = storage.get_trade_stats(days=30)
+        # Optimización: Calcular stats desde historial cacheado pa ahorrar DB calls
+        trades = get_cached_trade_history(storage)
+        
+        if trades:
+            total = len(trades)
+            wins = sum(1 for t in trades if t.profit > 0)
+            total_profit = sum(t.profit for t in trades)
+            win_rate = wins / total if total > 0 else 0
+            avg = total_profit / total if total > 0 else 0
+            
+            stats = {
+                "total_trades": total,
+                "win_rate": win_rate,
+                "total_profit": total_profit,
+                "avg_profit": avg
+            }
+        else:
+            stats = {}
     else:
         stats = {}
     
@@ -1042,13 +1485,19 @@ def render_sidebar():
         storage = get_storage_instance()
         if storage:
             storage.clear_trade_history()
-            st.sidebar.success("Historial de trades borrado")
+            # También limpiar eventos económicos para reiniciar duplicados
+            if hasattr(storage, 'clear_economic_events'):
+                storage.clear_economic_events()
+                
+            st.cache_data.clear() # Limpiar cache de Streamlit para reflejar cambios
+            st.sidebar.success("Historial y eventos borrados")
             st.rerun()
 
     if st.sidebar.button("📋 Limpiar Logs de Agentes", use_container_width=True):
         storage = get_storage_instance()
         if storage:
             storage.clear_agent_logs()
+            st.cache_data.clear() # Limpiar cache de logs
             st.sidebar.success("Logs de agentes borrados")
             st.rerun()
 
@@ -1091,6 +1540,7 @@ def main():
     
     # NEW: Sticky Navbar
     render_navbar()
+    st.markdown('<div class="nav-spacer"></div>', unsafe_allow_html=True)
     
     # --- SECCIÓN 1: DASHBOARD ---
     st.markdown('<div id="dashboard" class="section-container">', unsafe_allow_html=True)

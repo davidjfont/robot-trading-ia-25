@@ -109,23 +109,39 @@ class BaseScraper(ABC):
         
         self.browser = await self.playwright.chromium.launch(
             headless=True,
-            args=['--disable-blink-features=AutomationControlled']
+            args=[
+                '--disable-blink-features=AutomationControlled',
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-web-security',
+                '--disable-features=IsolateOrigins,site-per-process',
+                '--allow-running-insecure-content',
+                '--disable-blink-features=AutomationControlled'
+            ]
         )
         
         self.context = await self.browser.new_context(
-            user_agent=self._get_random_user_agent(),
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             viewport={'width': 1920, 'height': 1080},
-            locale='es-ES'
+            locale='en-US',
+            timezone_id='UTC',
+            extra_http_headers={
+                "Accept-Language": "en-US,en;q=0.9",
+                "Referer": "https://www.google.com/"
+            }
         )
         
         self.page = await self.context.new_page()
         
-        # Bloquear recursos innecesarios para acelerar
-        await self.page.route("**/*.{png,jpg,jpeg,gif,svg,ico,woff,woff2}", 
-                             lambda route: route.abort())
-        
-        logger.info(f"Navegador iniciado para '{self.name}'")
+        logger.info(f"Navegador iniciado para '{self.name}' (Stealth 2.0)")
     
+    async def set_cookies(self, cookies: List[Dict[str, Any]]):
+        """Añade cookies al contexto"""
+        if self.context:
+            await self.context.add_cookies(cookies)
+            logger.debug(f"Cookies añadidas para '{self.name}'")
+
     async def stop(self):
         """Cierra el navegador"""
         if self.browser:
@@ -156,14 +172,21 @@ class BaseScraper(ABC):
             try:
                 logger.debug(f"Navegando a {url} (intento {attempt + 1})")
                 
-                response = await self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                # Usar un timeout mas largo y wait_until="networkidle"
+                response = await self.page.goto(url, wait_until="load", timeout=45000)
+                
+                if response:
+                    logger.debug(f"HTTP Status: {response.status} para {url}")
                 
                 if response and response.status >= 400:
                     logger.warning(f"HTTP {response.status} en {url}")
+                    if response.status == 403:
+                         logger.error("Detección de Bot (403 Forbidden).")
                     continue
                 
                 if wait_selector:
-                    await self.page.wait_for_selector(wait_selector, timeout=10000)
+                    logger.debug(f"Esperando selector {wait_selector}...")
+                    await self.page.wait_for_selector(wait_selector, timeout=15000)
                 
                 logger.debug(f"Navegación exitosa a {url}")
                 return True
@@ -171,7 +194,7 @@ class BaseScraper(ABC):
             except Exception as e:
                 logger.warning(f"Error navegando a {url}: {e} (intento {attempt + 1})")
                 if attempt < self.max_retries - 1:
-                    await asyncio.sleep(2 ** attempt)  # Backoff exponencial
+                    await asyncio.sleep(5)  # Esperar mas tiempo entre reintentos
         
         logger.error(f"Falló navegación a {url} después de {self.max_retries} intentos")
         return False

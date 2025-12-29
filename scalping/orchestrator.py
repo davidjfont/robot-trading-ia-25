@@ -380,6 +380,15 @@ class ScalpingOrchestrator:
                             # Usar lógica de modify del order agent
                             new_sl = open_price
                             self.order_agent.modify_position(ticket, new_sl, pos_data.get('tp', 0))
+
+                    elif action == SnakeAction.RELEASE:
+                        logger.info(f"🐍 Snake RELEASE: Releasing control of #{ticket} -> {reason}")
+                        # Mark session as completed but DO NOT close position
+                        self.storage.update_snake_session(session.id, "COMPLETED", status.value, pos_data.get('profit', 0), reason)
+                        # We don't increment interventions or maybe we do to show activity? 
+                        # Let's count it as a positive intervention (it managed it to safety)
+                        self.session_stats['snake_interventions'] += 1
+                        logger.info(f"🐍 Snake Released Successfully (#{ticket})")
                 except Exception as e:
                     logger.error(f"Error processing individual Snake session #{session.ticket}: {e}")
 
