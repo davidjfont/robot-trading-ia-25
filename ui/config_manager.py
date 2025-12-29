@@ -19,6 +19,7 @@ DEFAULT_CONFIG = {
     "max_positions": 3,
     "auto_refresh": True,
     "refresh_interval": 5,
+    "bot_running": False,
     "trading_mode": "normal",
     "scalping": {
         "max_positions_per_symbol": 1,

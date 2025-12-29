@@ -255,6 +255,29 @@ st.markdown("""
         gap: 10px;
     }
 
+    /* Bot Status pulsing dot */
+    .status-dot {
+        height: 10px;
+        width: 10px;
+        border-radius: 50%;
+        display: inline-block;
+        margin-right: 8px;
+    }
+    .dot-running {
+        background-color: #00c853;
+        box-shadow: 0 0 8px #00c853;
+        animation: pulse-green 2s infinite;
+    }
+    .dot-stopped {
+        background-color: #ff1744;
+        box-shadow: 0 0 8px #ff1744;
+    }
+    @keyframes pulse-green {
+        0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(0, 200, 83, 0.7); }
+        70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(0, 200, 83, 0); }
+        100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(0, 200, 83, 0); }
+    }
+
     /* Filters Interaction */
     .filter-btn {
         background: #f1f3f4;
@@ -448,14 +471,29 @@ def get_cached_events(_storage):
 
 def render_header():
     """Renderiza el header principal"""
+    config = load_config()
+    is_running = config.get('bot_running', False)
+    status_color = "#00c853" if is_running else "#ff1744"
+    status_label = "BOT ONLINE" if is_running else "BOT OFFLINE"
+    dot_class = "dot-running" if is_running else "dot-stopped"
+
     col1, col2 = st.columns([3, 1])
     
     with col1:
-        st.markdown('<p class="main-header">🚀 Trading IA Dashboard</p>', unsafe_allow_html=True)
-        st.caption(f"Última actualización: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        st.markdown(f'''
+            <div style="display: flex; align-items: center; gap: 15px;">
+                <p class="main-header" style="margin-bottom: 0; border: none; padding-bottom: 0;">🚀 Trading IA Dashboard</p>
+                <div style="background: {status_color}22; color: {status_color}; padding: 4px 12px; border-radius: 20px; 
+                            font-size: 12px; font-weight: 800; border: 1px solid {status_color}44; display: flex; align-items: center;">
+                    <span class="status-dot {dot_class}" style="margin-right: 6px; width: 8px; height: 8px;"></span>
+                    {status_label}
+                </div>
+            </div>
+        ''', unsafe_allow_html=True)
+        st.caption(f"Última actualización: {datetime.now().strftime('%d/%m %H:%M:%S')}")
     
     with col2:
-        if st.button("🔄 Actualizar"):
+        if st.button("🔄 Actualizar", use_container_width=True):
             st.rerun()
 
 
@@ -1468,11 +1506,27 @@ def render_sidebar():
     
     st.sidebar.subheader("🔧 Acciones")
     
-    if st.sidebar.button("▶️ Iniciar Bot", use_container_width=True):
-        st.sidebar.success("Bot iniciado")
+    is_running = user_config.get('bot_running', False)
+    status_text = "INICIADO" if is_running else "DETENIDO"
+    status_class = "dot-running" if is_running else "dot-stopped"
     
-    if st.sidebar.button("⏹️ Detener Bot", use_container_width=True):
-        st.sidebar.warning("Bot detenido")
+    st.sidebar.markdown(f"""
+    <div style="display: flex; align-items: center; background: #f8f9fa; padding: 10px; border-radius: 8px; border: 1px solid #dadce0; margin-bottom: 10px;">
+        <span class="status-dot {status_class}"></span>
+        <span style="font-weight: 700; color: #202124; font-size: 13px;">ESTADO DEL BOT: </span>
+        <span style="margin-left: 5px; font-weight: 800; color: {'#00c853' if is_running else '#ff1744'}; text-transform: uppercase;"> {status_text}</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if st.sidebar.button("▶️ Iniciar Bot", use_container_width=True, type="primary" if not is_running else "secondary"):
+        update_config(bot_running=True)
+        st.sidebar.success("Señal de INICIO enviada")
+        st.rerun()
+    
+    if st.sidebar.button("⏹️ Detener Bot", use_container_width=True, type="primary" if is_running else "secondary"):
+        update_config(bot_running=False)
+        st.sidebar.warning("Señal de PARADA enviada")
+        st.rerun()
         
     st.sidebar.divider()
     

@@ -95,79 +95,139 @@ class NewsScraper(BaseScraper):
         
         logger.info(f"Scrapeando {source['name']}: {source['url']}")
         
-        # Iniciar navegador (base scraper maneja el ciclo si usamos run, 
-        # pero NewsScraper.scrape lo maneja manualmente)
+    async def navigate(self, url: str, wait_selector: str = None) -> bool:
+        """Navega a la url y espera a que el contenido cargue"""
+        return await super().navigate(url, wait_selector)
+
+    def _parse_news_time(self, time_el) -> datetime:
+        """Parsea el tiempo de publicación de una noticia de forma robusta"""
+        now = datetime.utcnow()
+        if not time_el:
+            return now
+            
+        # 1. Intentar atributo datetime o data-time (ISO format)
+        for attr in ['datetime', 'data-time', 'title']:
+            dt_str = time_el.get(attr, '')
+            if dt_str and len(dt_str) > 5:
+                try:
+                    # Handle Z and common formats
+                    clean_dt = dt_str.replace('Z', '+00:00').replace('/', '-')
+                    return datetime.fromisoformat(clean_dt).astimezone(timezone.utc).replace(tzinfo=None)
+                except:
+                    pass
+        
+        # 2. Parsear texto relativo o absoluto
+        text = time_el.get_text(strip=True).lower().replace('.', '')
+        import re
+        
+        try:
+            # Just now
+            if any(x in text for x in ['just now', 'ahora', '1 min']):
+                return now
+            
+            # Minutes ago
+            if 'min' in text:
+                m = re.search(r'(\d+)', text)
+                if m: return now - timedelta(minutes=int(m.group(1)))
+                
+            # Hours ago
+            if 'hour' in text or 'hora' in text:
+                m = re.search(r'(\d+)', text)
+                if m: return now - timedelta(hours=int(m.group(1)))
+                
+            # Days ago
+            if 'day' in text or 'día' in text:
+                m = re.search(r'(\d+)', text)
+                if m: return now - timedelta(days=int(m.group(1)))
+                
+            # Yesterday
+            if 'yesterday' in text or 'ayer' in text:
+                return now - timedelta(days=1)
+            
+            # 3. Formatos específicos complejos (ej: "dec 29, 2025 at 4:30 pm et")
+            if ' at ' in text:
+                # Extraer fecha y hora
+                # "dec 29, 2025 at 4:30 pm et" -> "dec 29, 2025 4:30 pm"
+                clean_text = text.split(' et')[0].replace(' at ', ' ')
+                for fmt in ['%b %d, %Y %I:%M %p', '%B %d, %Y %I:%M %p']:
+                    try:
+                        dt = datetime.strptime(clean_text, fmt)
+                        # Si dice ET, es US/Eastern (-5h UTC). Madrid es +1 UTC (+6h relativo a ET)
+                        return dt + timedelta(hours=5) 
+                    except:
+                        continue
+
+            # Absolute dates (e.g. "Dec 29, 2025") - Basic approach
+            if len(text) > 5:
+                for fmt in ['%b %d, %Y', '%B %d, %Y', '%d %b %Y', '%Y-%m-%d']:
+                    try:
+                        return datetime.strptime(text, fmt)
+                    except:
+                        continue
+        except Exception:
+            pass
+            
+        return now
+
+    async def scrape_source(self, source: dict) -> List[ScrapedItem]:
+        """Scrapea una fuente específica de noticias"""
+        items = []
+        if not source.get("enabled", True):
+            return items
+        
+        logger.info(f"Scrapeando {source['name']}: {source['url']}")
         success = await self.navigate(source["url"])
         if not success:
             logger.warning(f"No se pudo acceder a {source['name']}")
             return items
         
-        # Esperar un poco para que cargue contenido dinámico
         await asyncio.sleep(source.get("wait_time", 3))
         
         try:
-            # Obtener HTML de la página
             from bs4 import BeautifulSoup
             content = await self.get_page_content()
             soup = BeautifulSoup(content, 'lxml')
-            
-            # Buscar artículos
-            articles = soup.select(source["article_selector"])[:10]  # Máximo 10 por fuente
-            
-            logger.debug(f"Encontrados {len(articles)} artículos en {source['name']}")
+            articles = soup.select(source["article_selector"])[:10]
             
             for article in articles:
                 try:
-                    # Extraer título
                     title_el = article.select_one(source["title_selector"])
                     title = title_el.get_text(strip=True) if title_el else ""
+                    if not title: continue
                     
-                    if not title:
-                        continue
-                    
-                    # Extraer resumen
                     summary = ""
                     if source.get("summary_selector"):
                         summary_el = article.select_one(source["summary_selector"])
                         summary = summary_el.get_text(strip=True) if summary_el else ""
                     
                     # Extraer tiempo
-                    time_str = ""
+                    time_dt = datetime.utcnow()
                     if source.get("time_selector"):
                         time_el = article.select_one(source["time_selector"])
-                        time_str = time_el.get_text(strip=True) if time_el else ""
+                        if time_el:
+                            time_dt = self._parse_news_time(time_el)
                     
-                    # Extraer link
                     link_el = article.select_one(source["link_selector"])
                     link = ""
                     if link_el and link_el.get("href"):
                         href = link_el["href"]
-                        if href.startswith("/"):
-                            # URL relativa - sacar base de la URL original
-                            parts = source["url"].split("/")
-                            base = parts[0] + "//" + parts[2]
-                            link = base + href
-                        else:
-                            link = href
+                        link = (source["url"].split("//")[0] + "//" + source["url"].split("//")[1].split("/")[0] + href) if href.startswith("/") else href
                     
                     item = ScrapedItem(
                         source=source["name"],
                         title=title,
                         content=summary,
                         url=link,
-                        timestamp=datetime.now(),
+                        timestamp=time_dt,
                         metadata={
                             "type": "news",
                             "source_weight": source["weight"],
-                            "published_time": time_str
+                            "published_at": time_dt.strftime('%Y-%m-%d %H:%M:%S')
                         }
                     )
-                    
                     items.append(item)
-                    
                 except Exception as e:
                     logger.debug(f"Error parseando artículo de {source['name']}: {e}")
-                    continue
             
         except Exception as e:
             logger.error(f"Error parseando HTML de {source['name']}: {e}")
@@ -177,18 +237,13 @@ class NewsScraper(BaseScraper):
     async def scrape(self) -> List[ScrapedItem]:
         """Scrapea todas las fuentes de noticias configuradas"""
         all_items = []
-        
         try:
             await self.start()
-            
             for source in self.sources:
                 items = await self.scrape_source(source)
                 all_items.extend(items)
-                
-                # Pausa aleatoria entre fuentes para evitar rate limit
                 import random
                 await asyncio.sleep(random.uniform(2, 5))
-                
         except Exception as e:
             logger.error(f"Error en el ciclo de NewsScraper: {e}")
         finally:
