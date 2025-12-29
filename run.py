@@ -132,6 +132,7 @@ class TradingOrchestrator:
             from strategies.signals import SignalGenerator
             from strategies.combiner import MultiAgentCombiner
             from scraping.storage import get_storage
+            from scalping.snake_agent import SnakeAgent, SnakeAction, SnakeStatus
             
             # Inicializar componentes
             self.llm = get_llm()
@@ -146,6 +147,7 @@ class TradingOrchestrator:
             self.signal_generator = SignalGenerator()
             self.combiner = MultiAgentCombiner()
             self.storage = get_storage()
+            self.snake_agent = SnakeAgent()
             
             logger.info("✅ Todos los módulos cargados correctamente")
             
@@ -214,6 +216,9 @@ class TradingOrchestrator:
             
         logger.info("-" * 40)
         logger.info(f"🔄 GLOBAL STATE: {self.state.name} | {datetime.now().strftime('%H:%M:%S')}")
+
+        # 0. SNAKE MODE Check (Works in Normal Mode too)
+        self._process_snake_sessions()
         
         # 1. State Transition: IDLE -> OBSERVE
         if self.state == TradingState.IDLE:
@@ -255,6 +260,80 @@ class TradingOrchestrator:
                  logger.info("✅ Recovery successful -> IDLE")
              except Exception as e:
                  logger.error(f"Recovery failed: {e}")
+                 
+    def _process_snake_sessions(self):
+        """Procesa las sesiones de control temporal activas (Snake Mode) - Ported to TradingOrchestrator"""
+        try:
+            active_sessions = self.storage.get_active_snake_sessions()
+            if not active_sessions:
+                return
+
+            # Obtener datos de MT5
+            positions = self.order_agent.get_open_positions()
+            positions_map = {p['ticket']: p for p in positions}
+            
+            for session in active_sessions:
+                try:
+                    ticket = session.ticket
+                    pos_data = positions_map.get(ticket)
+                    
+                    if not pos_data:
+                        # La posición ya no existe, cerrar sesión como completada (o fallida)
+                        logger.warning(f"🐍 Posición #{ticket} no encontrada. Cerrando sesión Snake.")
+                        self.storage.update_snake_session(session.id, "COMPLETED", "NEUTRAL", 0, "Position closed manually or by SL/TP")
+                        continue
+                    
+                    # Evaluación del Snake Agent
+                    evaluation = self.snake_agent.evaluate(session, pos_data)
+                    
+                    action = evaluation['action']
+                    
+                    # Ejecutar acción
+                    if action == SnakeAction.CLOSE:
+                        reason = evaluation['reason']
+                        logger.info(f"🐍 Snake EXECUTE: Closing #{ticket} -> {reason}")
+                        success = self.order_agent.close_position(ticket)
+                        
+                        if success:
+                             # Importante: Trigger sync inmediata para que el dashboard lo vea
+                            self.storage.update_snake_session(session.id, "COMPLETED", evaluation['status'].value, pos_data.get('profit', 0), reason)
+                            logger.info(f"🐍 Snake Closed Successfully (#{ticket})")
+                            self._trigger_fast_sync() 
+                        else:
+                            logger.error(f"⚠️ Snake Failed to close #{ticket}. Will retry next tick.")
+                        
+                    elif action == SnakeAction.PROTECT:
+                        # Mover a Break-Even
+                        current_sl = pos_data.get('sl', 0)
+                        open_price = pos_data.get('open_price')
+                        reason = evaluation['reason']
+                        
+                        # Chequear si ya está protegido para no spammear
+                        is_protected = False
+                        if pos_data['type'] == 0: # BUY
+                            is_protected = current_sl >= open_price
+                        else: # SELL
+                             is_protected = current_sl <= open_price and current_sl > 0
+                        
+                        if not is_protected:
+                            logger.info(f"🐍 Snake PROTECT: Break-Even #{ticket} -> {reason}")
+                            new_sl = open_price
+                            self.order_agent.modify_position(ticket, new_sl, pos_data.get('tp', 0))
+                except Exception as e:
+                    logger.error(f"Error processing individual Snake session #{session.ticket}: {e}")
+
+        except Exception as e:
+            logger.error(f"Error procesando ciclo Snake: {e}")
+
+    def _trigger_fast_sync(self):
+        """Fuerza una sincronización rápida del historial"""
+        try:
+             deals = self.mt5.get_history_deals(days=1)
+             if deals:
+                 self.storage.import_mt5_history(deals)
+                 logger.info("⚡ Fast Sync activado por evento de cierre")
+        except Exception as e:
+            logger.error(f"Error en fast sync: {e}")
                  
     def _process_symbol_state_guided(self, symbol: str):
         """Procesa un símbolo específico bajo la máquina de estados"""
@@ -435,6 +514,15 @@ class TradingOrchestrator:
             if positions:
                 for pos in positions:
                     self._manage_position(pos)
+            
+            # CHECK PARA SYNC RÁPIDO DE ESTADÍSTICAS
+            # Si teníamos más posiciones antes que ahora, significa que se cerró algo (manual o TP/SL)
+            if hasattr(self, '_last_pos_count'):
+                if num_positions < self._last_pos_count:
+                    logger.info("📉 Detectado cierre de posición (count drop). Ejecutando Fast Sync...")
+                    self._trigger_fast_sync()
+            
+            self._last_pos_count = num_positions
                     
         except Exception as e:
             logger.error(f"Error en monitoreo de posiciones: {e}")

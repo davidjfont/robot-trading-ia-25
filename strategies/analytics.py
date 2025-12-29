@@ -24,6 +24,7 @@ class TradeResult:
     profit: float
     pips: float
     duration_minutes: int
+    r_multiple: float = 0.0
 
 
 class TradingAnalytics:
@@ -77,7 +78,9 @@ class TradingAnalytics:
             # Expectativa
             'expectancy': self.expectancy,
             'expectancy_pips': self.expectancy_pips,
+            'expectancy_pips': self.expectancy_pips,
             'risk_reward_ratio': self.risk_reward_ratio,
+            'avg_r_multiple': self.avg_r_multiple,
             
             # Rachas
             'max_consecutive_wins': self.max_consecutive_wins,
@@ -317,6 +320,13 @@ class TradingAnalytics:
         return abs(self.avg_winning_trade / self.avg_losing_trade)
     
     @property
+    def avg_r_multiple(self) -> float:
+        """Promedio de R-multiples"""
+        if not self.trades:
+            return 0.0
+        return np.mean([t.r_multiple for t in self.trades])
+    
+    @property
     def max_consecutive_wins(self) -> int:
         """Máxima racha ganadora"""
         return self._max_consecutive(lambda t: t.profit > 0)
@@ -387,7 +397,9 @@ class TradingAnalytics:
             'max_drawdown_duration': 0,
             'expectancy': 0.0,
             'expectancy_pips': 0.0,
+            'expectancy_pips': 0.0,
             'risk_reward_ratio': 0.0,
+            'avg_r_multiple': 0.0,
             'max_consecutive_wins': 0,
             'max_consecutive_losses': 0,
             'recovery_factor': 0.0,

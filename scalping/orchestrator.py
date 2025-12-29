@@ -14,6 +14,7 @@ from .technical_filter import TechnicalFilter
 from .execution_agent import ScalpExecutionAgent
 from .risk_agent import ScalpRiskAgent
 from .learning_agent import LearningAgent
+from .snake_agent import SnakeAgent, SnakeAction
 
 
 class ScalpingOrchestrator:
@@ -51,6 +52,7 @@ class ScalpingOrchestrator:
         self.execution_agent = ScalpExecutionAgent(order_agent, mt5_connector, scalp_config)
         self.risk_agent = ScalpRiskAgent(storage, mt5_connector, scalp_config)
         self.learning_agent = LearningAgent(storage, scalp_config)
+        self.snake_agent = SnakeAgent()
         
         # Estado
         self.running = False
@@ -65,8 +67,10 @@ class ScalpingOrchestrator:
             'signals_detected': 0,
             'context_blocks': 0,
             'risk_blocks': 0,
-            'technical_rejects': 0
+            'technical_rejects': 0,
+            'snake_interventions': 0
         }
+
         
         logger.info("🧠 ScalpingOrchestrator inicializado")
         logger.info(f"   Símbolos: {self.symbols}")
@@ -85,6 +89,10 @@ class ScalpingOrchestrator:
         while self.running and not self._shutdown_event.is_set():
             try:
                 cycle_start = time.time()
+                
+                # 0. SNAKE MODE: Temporal Outcome Control Loop
+                # (Procesar sesiones activas antes de cualquier otra cosa)
+                self._process_snake_sessions()
                 
                 # ═══════════════════════════════════════════════════════════
                 # AUTO-MAINTAIN: Asegurar al menos una posición por símbolo seleccionado
@@ -312,3 +320,68 @@ class ScalpingOrchestrator:
         if analysis['recommendations']:
             for rec in analysis['recommendations']:
                 logger.info(f"[Scalp] 💡 Recomendación: {rec}")
+
+    def _process_snake_sessions(self):
+        """Procesa las sesiones de control temporal activas (Snake Mode)"""
+        try:
+            active_sessions = self.storage.get_active_snake_sessions()
+            if not active_sessions:
+                return
+
+            # Obtener datos de MT5
+            positions = self.order_agent.get_open_positions()
+            positions_map = {p['ticket']: p for p in positions}
+            
+            for session in active_sessions:
+                try:
+                    ticket = session.ticket
+                    pos_data = positions_map.get(ticket)
+                    
+                    if not pos_data:
+                        # La posición ya no existe, cerrar sesión como completada (o fallida)
+                        logger.warning(f"🐍 Posición #{ticket} no encontrada. Cerrando sesión Snake.")
+                        self.storage.update_snake_session(session.id, "COMPLETED", "NEUTRAL", 0, "Position closed manually or by SL/TP")
+                        continue
+                    
+                    # Evaluación del Snake Agent
+                    evaluation = self.snake_agent.evaluate(session, pos_data)
+                    
+                    action = evaluation['action']
+                    status = evaluation['status']
+                    confidence = evaluation['confidence']
+                    reason = evaluation['reason']
+                    
+                    # Ejecutar acción
+                    if action == SnakeAction.CLOSE:
+                        logger.info(f"🐍 Snake EXECUTE: Closing #{ticket} -> {reason}")
+                        success = self.order_agent.close_position(ticket)
+                        
+                        if success:
+                            self.storage.update_snake_session(session.id, "COMPLETED", status.value, pos_data.get('profit', 0), reason)
+                            self.session_stats['snake_interventions'] += 1
+                            logger.info(f"🐍 Snake Closed Successfully (#{ticket})")
+                        else:
+                            logger.error(f"⚠️ Snake Failed to close #{ticket}. Will retry next tick.")
+                        
+                    elif action == SnakeAction.PROTECT:
+                        # Mover a Break-Even
+                        current_sl = pos_data.get('sl', 0)
+                        open_price = pos_data.get('open_price')
+                        
+                        # Chequear si ya está protegido para no spammear
+                        is_protected = False
+                        if pos_data['type'] == 0: # BUY
+                            is_protected = current_sl >= open_price
+                        else: # SELL
+                             is_protected = current_sl <= open_price and current_sl > 0
+                        
+                        if not is_protected:
+                            logger.info(f"🐍 Snake PROTECT: Break-Even #{ticket} -> {reason}")
+                            # Usar lógica de modify del order agent
+                            new_sl = open_price
+                            self.order_agent.modify_position(ticket, new_sl, pos_data.get('tp', 0))
+                except Exception as e:
+                    logger.error(f"Error processing individual Snake session #{session.ticket}: {e}")
+
+        except Exception as e:
+            logger.error(f"Error procesando ciclo Snake: {e}")

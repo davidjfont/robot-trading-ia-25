@@ -111,6 +111,32 @@ class AgentLog(Base):
     created_at = Column(DateTime, default=datetime.now)
 
 
+class SnakeSession(Base):
+    """Modelo para sesiones de control temporal (Snake Mode)"""
+    __tablename__ = 'snake_sessions'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ticket = Column(Integer, nullable=False)  # ID de la orden en MT5
+    symbol = Column(String(20), nullable=False)
+    
+    # Configuración de tiempo
+    start_time = Column(DateTime, default=datetime.now)
+    duration_seconds = Column(Integer, nullable=False)  # Duración pactada (e.g. 30, 60)
+    end_time_planned = Column(DateTime, nullable=False)
+    
+    # Estado
+    status = Column(String(20), default="ACTIVE")  # ACTIVE, COMPLETED, ABORTED
+    outcome = Column(String(20))  # SUCCESS, FAIL, NEUTRAL
+    
+    # Datos iniciales para comparación
+    entry_price = Column(Float)
+    initial_profit = Column(Float)
+    
+    # Evaluación final
+    final_profit = Column(Float)
+    notes = Column(Text)  # Razón del cierre (Time expire, SL logic, etc)
+
+
 
 class Storage:
     """
@@ -566,6 +592,17 @@ class Storage:
                     # Esto es una simplificación, dependería del símbolo (5 vs 3 decimales)
                     pips = abs(t.close_price - t.open_price) * 10000
                 
+                # Calcular R-Multiple
+                r_mult = 0.0
+                if t.sl and t.sl > 0 and t.open_price:
+                    risk_per_share = abs(t.open_price - t.sl)
+                    if risk_per_share > 0:
+                        diff_price = t.close_price - t.open_price
+                        if str(t.order_type).upper() in ["SELL", "1"]:
+                            diff_price = -diff_price
+                        
+                        r_mult = diff_price / risk_per_share
+
                 results.append(TradeResult(
                     ticket=t.ticket,
                     symbol=t.symbol,
@@ -577,7 +614,8 @@ class Storage:
                     close_time=t.closed_at,
                     profit=t.profit or 0.0,
                     pips=pips,
-                    duration_minutes=duration
+                    duration_minutes=duration,
+                    r_multiple=r_mult
                 ))
             return results
         except Exception as e:
@@ -657,6 +695,74 @@ class Storage:
         except Exception as e:
             session.rollback()
             logger.error(f"Error borrando logs: {e}")
+        finally:
+            session.close()
+
+    # ========== Snake Sessions (Timing Control) ==========
+
+    def create_snake_session(self, ticket: int, symbol: str, duration_seconds: int, entry_price: float, current_profit: float) -> int:
+        """Crea una nueva sesión de control temporal para una orden existente"""
+        session = self.get_session()
+        try:
+            # Desactivar sesiones anteriores para este ticket si las hay
+            old_sessions = session.query(SnakeSession).filter(
+                SnakeSession.ticket == ticket,
+                SnakeSession.status == "ACTIVE"
+            ).all()
+            for old in old_sessions:
+                old.status = "ABORTED"
+                old.notes = "Replaced by new session"
+            
+            now = datetime.now()
+            planned_end = now + timedelta(seconds=duration_seconds)
+            
+            new_session = SnakeSession(
+                ticket=ticket,
+                symbol=symbol,
+                duration_seconds=duration_seconds,
+                start_time=now,
+                end_time_planned=planned_end,
+                entry_price=entry_price,
+                initial_profit=current_profit,
+                status="ACTIVE"
+            )
+            
+            session.add(new_session)
+            session.commit()
+            logger.info(f"🐍 Snake Session creada para Ticket #{ticket} ({duration_seconds}s)")
+            return new_session.id
+            
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Error creando Snake Session: {e}")
+            return 0
+        finally:
+            session.close()
+
+    def get_active_snake_sessions(self) -> List[SnakeSession]:
+        """Obtiene todas las sesiones Snake activas"""
+        session = self.get_session()
+        try:
+            return session.query(SnakeSession).filter(
+                SnakeSession.status == "ACTIVE"
+            ).all()
+        finally:
+            session.close()
+
+    def update_snake_session(self, session_id: int, status: str, outcome: str = None, final_profit: float = None, notes: str = None):
+        """Actualiza el estado de una sesión Snake"""
+        session = self.get_session()
+        try:
+            s = session.query(SnakeSession).filter(SnakeSession.id == session_id).first()
+            if s:
+                s.status = status
+                if outcome: s.outcome = outcome
+                if final_profit is not None: s.final_profit = final_profit
+                if notes: s.notes = notes
+                session.commit()
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Error actualizando Snake Session: {e}")
         finally:
             session.close()
 

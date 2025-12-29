@@ -105,7 +105,10 @@ class MemoryAgent(BaseAgent):
         
         if self.llm.is_available():
             response = self.llm.generate(prompt)
-            return response
+            # Extraer contenido si es un objeto LLMResponse
+            if hasattr(response, 'content'):
+                return response.content
+            return str(response)
         else:
             return f"Resumen manual (LLM no disponible): {activity['signals_count']} señales y {activity['trades']} trades."
 
