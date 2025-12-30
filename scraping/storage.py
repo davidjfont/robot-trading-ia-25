@@ -474,10 +474,14 @@ class Storage:
         finally:
             session.close()
 
-    def import_mt5_history(self, deals: List[Dict[str, Any]]) -> int:
+    def import_mt5_history(self, deals: List[Dict[str, Any]], connector: Optional[Any] = None) -> int:
         """
         Importa y reconstruye el historial completo desde deals de MT5.
-        Diferencia de sync_closed_trades porque crea el trade si no existe.
+        
+        Args:
+            deals: Lista de deals obtenidos de MT5.
+            connector: Opcional, instancia de MT5Connector para pedir info adicional 
+                      de tickets incompletos.
         """
         if not deals:
             return 0
@@ -503,7 +507,21 @@ class Storage:
                 exit_deal = next((d for d in t_deals if d.get('entry_type') == 1), None)
                 
                 if not trade:
-                    # Crear nuevo trade si tenemos al menos la ENTRADA (ideal) o la SALIDA (mínimo)
+                    # Si el ticket es nuevo en nuestra DB, intentamos tener el trade completo
+                    # (ENTRADA + SALIDA)
+                    
+                    # 1. Caso Ideal: Ambos deals están en el batch actual
+                    entry_deal = next((d for d in t_deals if d.get('entry_type') == 0), None)
+                    exit_deal = next((d for d in t_deals if d.get('entry_type') == 1), None)
+                    
+                    # 2. Si falta uno y tenemos el connector, pedimos el historial COMPLETO de ese ticket
+                    if (not entry_deal or not exit_deal) and connector:
+                        logger.debug(f"🔍 Trade #{ticket} incompleto en batch. Pidiendo historial completo a MT5...")
+                        full_ticket_deals = connector.get_history_deals_by_ticket(ticket)
+                        if full_ticket_deals:
+                            entry_deal = next((d for d in full_ticket_deals if d.get('entry_type') == 0), None)
+                            exit_deal = next((d for d in full_ticket_deals if d.get('entry_type') == 1), None)
+                    
                     if entry_deal:
                         trade = TradeHistory(
                             ticket=ticket,
@@ -516,32 +534,30 @@ class Storage:
                         )
                         session.add(trade)
                     elif exit_deal:
-                        # Si no tenemos la entrada (fuera del rango de días),
-                        # usamos los datos de la salida para reconstruir lo básico.
-                        # El precio de entrada real no lo tenemos, usamos el de salida como base
-                        # para que no falle el cálculo de profit.
+                        # Fallback extremo si no encontramos la entrada ni con el connector
                         trade = TradeHistory(
                             ticket=ticket,
                             symbol=exit_deal['symbol'],
-                            order_type="SELL" if exit_deal['type'] == "BUY" else "BUY", # Invertir la salida
+                            order_type="SELL" if exit_deal['type'] == "BUY" else "BUY",
                             volume=exit_deal['volume'],
-                            open_price=exit_deal['price'], # Desconocido, usamos salida para evitar saltos raros
-                            opened_at=exit_deal['timestamp'] - timedelta(hours=1), # Estimación
+                            open_price=exit_deal['price'], # Estimación (se corregirá si se encuentra la entrada)
+                            opened_at=exit_deal['timestamp'] - timedelta(hours=1),
                             status="open"
                         )
                         session.add(trade)
                 
-                # Actualizar datos de cierre si hay deal de salida
-                if trade and exit_deal:
-                    trade.status = "closed"
-                    trade.close_price = exit_deal['price']
-                    trade.profit = exit_deal['profit'] + exit_deal.get('commission', 0) + exit_deal.get('swap', 0)
-                    trade.closed_at = exit_deal['timestamp']
-                    
-                    # Si acabamos de crear el trade desde la salida, ajustamos el precio de entrada
-                    # para que el profit coincida con el reportado por MT5.
-                    # profit = (p_close - p_open) * vol * mult (aprox) -> p_open = p_close - (profit / (vol * mult))
-                    # Pero es más fácil confiar en el profit del deal de MT5 y dejar el open_price decorativo.
+                    if trade.status == "closed":
+                        # Si teníamos el open_price estimado o en 0 (porque no estaba en la ventana inicial)
+                        # y ahora tenemos el entry_deal real, actualizarlo.
+                        if entry_deal:
+                             # Verificamos si los datos actuales son estimaciones o están vacíos
+                             is_estimated = (trade.open_price == 0 or trade.open_price == trade.close_price or trade.opened_at == trade.closed_at - timedelta(hours=1))
+                             if is_estimated:
+                                 trade.open_price = entry_deal['price']
+                                 trade.opened_at = entry_deal['timestamp']
+                                 logger.debug(f"🛠️ Reconstrucción exitosa para #{ticket}: Entrada fijada a {trade.open_price}")
+
+                        logger.success(f"📈 Trade #{ticket} ({trade.symbol}) importado/actualizado como CERRADO (Profit: {trade.profit:.2f})")
                 
                 imported_count += 1
             
@@ -763,6 +779,55 @@ class Storage:
         except Exception as e:
             session.rollback()
             logger.error(f"Error borrando logs: {e}")
+        finally:
+            session.close()
+
+    def run_health_check(self, connector: Optional[Any] = None) -> Dict[str, Any]:
+        """Realiza un diagnóstico de salud de la base de datos"""
+        session = self.get_session()
+        stats = {
+            "is_physically_ok": False,
+            "total_trades": 0,
+            "duplicates": 0,
+            "orphans": 0,
+            "sync_gap_detected": False
+        }
+        
+        try:
+            # Physical check
+            res = session.execute("PRAGMA integrity_check").fetchone()
+            stats["is_physically_ok"] = (res[0] == "ok")
+            
+            # Content stats
+            stats["total_trades"] = session.query(TradeHistory).count()
+            
+            # Duplicates
+            dup_query = session.execute(
+                "SELECT ticket, COUNT(*) FROM trade_history GROUP BY ticket HAVING COUNT(*) > 1"
+            ).fetchall()
+            stats["duplicates"] = len(dup_query)
+            
+            # MT5 Sync Check (if connector provided)
+            if connector and connector.connected:
+                # 1. Orphans
+                db_open_tickets = {t.ticket for t in session.query(TradeHistory.ticket).filter(TradeHistory.status == "open").all()}
+                mt5_positions = connector.get_positions()
+                mt5_open_tickets = {p.ticket for p in mt5_positions}
+                stats["orphans"] = len(db_open_tickets - mt5_open_tickets)
+                
+                # 2. Gap check (last 7 days)
+                cutoff = datetime.now() - timedelta(days=7)
+                local_count = session.query(TradeHistory).filter(TradeHistory.closed_at >= cutoff).count()
+                
+                deals = connector.get_history_deals(days=7)
+                mt5_closed_count = len({d['ticket'] for d in deals if d.get('entry_type') == 1})
+                
+                stats["sync_gap_detected"] = (local_count < mt5_closed_count)
+                
+            return stats
+        except Exception as e:
+            logger.error(f"Error en health check: {e}")
+            return stats
         finally:
             session.close()
 

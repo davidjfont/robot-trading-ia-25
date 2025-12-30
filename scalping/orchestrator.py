@@ -58,6 +58,7 @@ class ScalpingOrchestrator:
         self.running = False
         self._shutdown_event = threading.Event()
         self.cycle_interval = scalp_config.get('cycle_interval_seconds', 10)
+        self.max_positions = scalp_config.get('max_positions', 3)
         self.symbols = self.config.get('trading', {}).get('symbols', ['EURUSD', 'GBPUSD'])
         
         # Estadísticas de sesión
@@ -70,7 +71,11 @@ class ScalpingOrchestrator:
             'technical_rejects': 0,
             'snake_interventions': 0
         }
-
+        
+        # Historial para detección de cierre
+        self._last_pos_count = 0
+        self._last_bg_sync = 0
+        self._bg_sync_interval = 300 # 5 minutos
         
         logger.info("🧠 ScalpingOrchestrator inicializado")
         logger.info(f"   Símbolos: {self.symbols}")
@@ -92,6 +97,26 @@ class ScalpingOrchestrator:
                 
                 # 0. SNAKE MODE: Temporal Outcome Control Loop
                 # (Procesar sesiones activas antes de cualquier otra cosa)
+                # 0. REFRESH CONFIG: Cargar cambios desde la UI/JSON
+                try:
+                    import json
+                    user_config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data', 'user_config.json')
+                    if os.path.exists(user_config_path):
+                        with open(user_config_path, 'r', encoding='utf-8') as f:
+                            user_config = json.load(f)
+                            if 'max_risk_percent' in user_config:
+                                val = user_config['max_risk_percent']
+                                self.risk_agent.max_daily_loss_percent = val
+                                self.execution_agent.risk_per_trade_percent = val
+                            if 'max_positions' in user_config:
+                                val = user_config['max_positions']
+                                self.max_positions = val
+                                self.risk_agent.max_positions = val
+                            if 'symbols' in user_config:
+                                self.symbols = user_config['symbols']
+                except Exception as config_err:
+                    logger.debug(f"Error recargando config en scalper: {config_err}")
+
                 self._process_snake_sessions()
                 
                 # ═══════════════════════════════════════════════════════════
@@ -109,6 +134,21 @@ class ScalpingOrchestrator:
                         logger.info(f"🤖 SCALPING AUTO-FIX: Forzando posición mínima en {symbol}")
                         # Usar dirección técnica o aleatoria para la entrada forzada
                         self._force_open_scalp(symbol)
+                
+                # ═══════════════════════════════════════════════════════════
+                # SYNC: Detectar cierres y sincronizar historial
+                # ═══════════════════════════════════════════════════════════
+                num_positions = len(positions) if positions else 0
+                if num_positions < self._last_pos_count:
+                    logger.info("📉 SCALPING: Detectado cierre de posición. Sincronizando...")
+                    self._trigger_fast_sync()
+                self._last_pos_count = num_positions
+                
+                # BG Sync cada 5 mins
+                now = time.time()
+                if now - self._last_bg_sync > self._bg_sync_interval:
+                    self._background_sync_cycle()
+                    self._last_bg_sync = now
                 
                 # Ejecutar ciclo normal para cada símbolo
                 for symbol in self.symbols:
@@ -265,6 +305,27 @@ class ScalpingOrchestrator:
             self.session_stats['trades_blocked'] += 1
             logger.error(f"[Scalp] {symbol}: ❌ Error en ejecución - {result['error']}")
             self._log_decision(symbol, "EXEC_ERROR", result['error'])
+
+    def _trigger_fast_sync(self):
+        """Sincronización rápida por evento"""
+        try:
+            deals = self.mt5.get_history_deals(days=1)
+            if deals:
+                self.storage.import_mt5_history(deals, connector=self.mt5)
+                logger.info("⚡ SCALPING: Fast Sync completado")
+        except Exception as e:
+            logger.error(f"Error en fast sync (Scalp): {e}")
+
+    def _background_sync_cycle(self):
+        """Sincronización profunda periódica"""
+        try:
+            # Sincronizar últimos 15 días
+            deals = self.mt5.get_history_deals(days=15)
+            if deals:
+                self.storage.import_mt5_history(deals, connector=self.mt5)
+                logger.debug(f"🔄 SCALPING: BG Sync completado ({len(deals)} deals)")
+        except Exception as e:
+            logger.error(f"Error en bg sync (Scalp): {e}")
     
     def _get_rates(self, symbol: str, timeframe: str, count: int) -> list:
         """Obtiene datos de velas"""

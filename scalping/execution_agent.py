@@ -39,6 +39,7 @@ class ScalpExecutionAgent:
         self.stop_loss_pips = self.config.get('stop_loss_pips', 3)
         self.take_profit_pips = self.config.get('take_profit_pips', 6)
         self.volume = self.config.get('volume', 0.01)
+        self.risk_per_trade_percent = self.config.get('risk_per_trade_percent', 1.0)
         self.max_trade_duration = self.config.get('max_trade_duration_seconds', 120)
         
         # Control de trades activos
@@ -177,18 +178,42 @@ class ScalpExecutionAgent:
             }
     
     def _adjust_volume(self, confidence: float) -> float:
-        """Ajusta volumen según confianza asegurando un mínimo de 0.01"""
-        base_volume = self.volume
-        
-        if confidence >= 0.9:
-            adjusted = base_volume * 1.5
-        elif confidence >= 0.75:
-            adjusted = base_volume
-        else:
-            adjusted = base_volume * 0.5
+        """Ajusta volumen según riesgo (%) y confianza"""
+        try:
+            # 1. Obtener balance actual
+            account_info = self.mt5.get_account_info()
+            balance = account_info.get('balance', 1000) if account_info else 1000
             
-        # Asegurar volumen mínimo de 0.01 (lote mínimo estándar)
-        return max(0.01, round(adjusted, 2))
+            # 2. Calcular monto a arriesgar (según config de riesgo)
+            risk_amount = balance * (self.risk_per_trade_percent / 100)
+            
+            # 3. Calcular valor del pip aproximado (Forex estándar: 0.1 lots = $1/pip)
+            # Para 1.0 lote, 1 pip (0.0001) = $10.00
+            # Valor de riesgo por pip = risk_amount / stop_loss_pips
+            risk_per_pip = risk_amount / max(1, self.stop_loss_pips)
+            
+            # Volume = risk_per_pip / 10 ($10 is the pip value for 1.0 lot in standard pairs)
+            # Todo: Ajustar pip_value según símbolo (JPY, etc)
+            pip_value_std = 10.0 
+            calculated_volume = risk_per_pip / pip_value_std
+            
+            # 4. Ajustar por confianza
+            if confidence >= 0.9:
+                calculated_volume *= 1.2
+            elif confidence < 0.5:
+                calculated_volume *= 0.5
+            
+            # Asegurar límites psicológicos y técnicos
+            final_volume = round(calculated_volume, 2)
+            
+            # Log para debug
+            logger.debug(f"[ScalpVolume] Balance: {balance} | Risk%: {self.risk_per_trade_percent} | Risk$: {risk_amount:.2f} | Vol calc: {final_volume}")
+            
+            return max(0.01, min(final_volume, 1.0)) # Cap at 1.0 lot for safety in scalping
+            
+        except Exception as e:
+            logger.error(f"Error calculando volumen dinámico: {e}")
+            return 0.01
     
     def _get_current_price(self, symbol: str, direction: str) -> Optional[float]:
         """Obtiene precio actual"""

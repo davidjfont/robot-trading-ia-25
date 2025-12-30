@@ -63,7 +63,11 @@ class SentimentAgent(BaseAgent):
                     continue
                 
                 # Analizar con LLM
-                analysis = self.llm.analyze_sentiment(text, context)
+                # Truncar texto si es muy largo para evitar errores de contexto/truncamiento
+                max_chars = 300
+                safe_text = text[:max_chars] + ("..." if len(text) > max_chars else "")
+                
+                analysis = self.llm.analyze_sentiment(safe_text, context)
                 results.append(analysis)
                 
                 # Guardar en cache

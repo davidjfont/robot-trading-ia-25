@@ -54,7 +54,17 @@ def render_price_chart(symbol: str = "EURUSD", timeframe: str = "M15",
     if 'chart_tf_selector' not in st.session_state:
         st.session_state['chart_tf_selector'] = timeframe
 
-    symbols_list = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD"]
+    # Obtener lista de símbolos de la sesión o usar una por defecto más amplia
+    selected_symbols = st.session_state.get('selected_symbols', [])
+    if not selected_symbols:
+        symbols_list = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "GOLD", "BTCUSD"]
+    else:
+        symbols_list = selected_symbols
+
+    # Asegurar que el símbolo actual esté en la lista (evitar errores de Streamlit selectbox)
+    if symbol not in symbols_list:
+        symbols_list = list(symbols_list) + [symbol]
+
     tf_list = ["M1", "M5", "M15", "M30", "H1", "H4", "D1"]
 
     with col1:
@@ -104,7 +114,7 @@ def render_price_chart(symbol: str = "EURUSD", timeframe: str = "M15",
     fig = create_chart(df, chart_symbol, show_indicators, llm_analysis)
     
     # Mostrar gráfico
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
     
     # Análisis dinámico si no se proporciona uno fijo
     if llm_analysis is None:

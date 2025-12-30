@@ -347,9 +347,15 @@ class MT5Connector:
         else:
             start = datetime.now() - timedelta(days=days)
             
-        deals = mt5.history_deals_get(start, datetime.now())
+        # Usar un margen de 1 día en el futuro para evitar problemas de desfase horario con el broker
+        end = datetime.now() + timedelta(days=1)
+        deals = mt5.history_deals_get(start, end)
         
-        if deals is None or len(deals) == 0:
+        if deals is None:
+            logger.warning(f"⚠️ MT5 history_deals_get devolvió None para el rango {start} - {end}")
+            return []
+            
+        if len(deals) == 0:
             return []
             
         result = []
@@ -369,6 +375,39 @@ class MT5Connector:
                     "timestamp": datetime.fromtimestamp(d.time),
                     "entry_type": d.entry # 0=EN_ENTRY_IN, 1=EN_ENTRY_OUT, 2=EN_ENTRY_INOUT
                 })
+        
+        return result
+    
+    def get_history_deals_by_ticket(self, ticket: int) -> List[Dict[str, Any]]:
+        """
+        Obtiene todos los deals asociados a un ticket de posición específico.
+        """
+        if not self.ensure_connected():
+            return []
+            
+        # Pedir historial desde hace 2 años y 1 día en el futuro
+        start = datetime.now() - timedelta(days=730)
+        end = datetime.now() + timedelta(days=1)
+        deals = mt5.history_deals_get(start, end, position=ticket)
+        
+        if deals is None or len(deals) == 0:
+            return []
+            
+        result = []
+        for d in deals:
+            # En el caso de búsqueda por posición, incluimos todos los deals del ticket
+            result.append({
+                "ticket": d.position_id,
+                "symbol": d.symbol,
+                "type": "BUY" if d.type == 0 else "SELL",
+                "volume": d.volume,
+                "price": d.price,
+                "profit": d.profit,
+                "commission": d.commission,
+                "swap": d.swap,
+                "timestamp": datetime.fromtimestamp(d.time),
+                "entry_type": d.entry # 0=IN, 1=OUT, 2=INOUT
+            })
         
         return result
     

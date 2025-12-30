@@ -116,13 +116,13 @@ class BaseScraper(ABC):
                 '--disable-dev-shm-usage',
                 '--disable-web-security',
                 '--disable-features=IsolateOrigins,site-per-process',
-                '--allow-running-insecure-content',
-                '--disable-blink-features=AutomationControlled'
+                '--allow-running-insecure-content'
             ]
         )
         
+        user_agent = self._get_random_user_agent()
         self.context = await self.browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            user_agent=user_agent,
             viewport={'width': 1920, 'height': 1080},
             locale='en-US',
             timezone_id='UTC',
@@ -150,6 +150,9 @@ class BaseScraper(ABC):
         
         if self.playwright:
             await self.playwright.stop()
+            # Pequeño delay para permitir que Windows limpie los pipes del proceso hijo
+            # antes de que el loop de asyncio se cierre del todo.
+            await asyncio.sleep(0.2)
     
     async def navigate(self, url: str, wait_selector: Optional[str] = None) -> bool:
         """

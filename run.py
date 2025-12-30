@@ -6,6 +6,12 @@ import sys
 import os
 import time
 import signal
+import asyncio
+
+# Fix for Windows asyncio loop issues with subprocesses (Playwright/Ollama)
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
 import threading
 from datetime import datetime, timedelta
 from enum import Enum
@@ -16,6 +22,7 @@ import yaml
 import schedule
 
 from core.states import TradingState
+from scalping.snake_agent import SnakeAgent, SnakeAction, SnakeStatus
 
 # Configurar path
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -69,12 +76,27 @@ def load_unified_config(config_path: str = "config.yaml") -> dict:
                     config['trading']['symbols'] = user_config['symbols']
                 
                 if 'max_risk_percent' in user_config:
+                    val = user_config['max_risk_percent']
                     config['risk'] = config.get('risk', {})
-                    config['risk']['max_allowed_risk_percent'] = user_config['max_risk_percent']
+                    config['risk']['max_allowed_risk_percent'] = val
+                    config['risk']['max_daily_loss_percent'] = val
+                    config['risk']['risk_per_trade_percent'] = val
+                    config['risk']['max_position_size'] = max(0.1, val / 10.0) # Scale with risk
+                    
+                    # También inyectar en scalping si existe
+                    if 'scalping' not in config: config['scalping'] = {}
+                    config['scalping']['max_daily_loss_percent'] = val
+                    config['scalping']['risk_per_trade_percent'] = val
                     
                 if 'max_positions' in user_config:
+                    val = user_config['max_positions']
                     if 'risk' not in config: config['risk'] = {}
-                    config['risk']['max_open_positions'] = user_config['max_positions']
+                    config['risk']['max_open_positions'] = val
+                    
+                    # Para scalping
+                    if 'scalping' not in config: config['scalping'] = {}
+                    config['scalping']['max_positions'] = val
+                    config['scalping']['max_trades_per_session'] = val * 5 # Allow more total trades
                 
                 if 'trading_mode' in user_config:
                     config['trading_mode'] = user_config['trading_mode']
@@ -132,14 +154,13 @@ class TradingOrchestrator:
             from strategies.signals import SignalGenerator
             from strategies.combiner import MultiAgentCombiner
             from scraping.storage import get_storage
-            from scalping.snake_agent import SnakeAgent, SnakeAction, SnakeStatus
             
             # Inicializar componentes
             self.llm = get_llm()
             self.news_agent = NewsAgent()
             self.sentiment_agent = SentimentAgent()
             self.technical_agent = TechnicalAgent()
-            self.risk_agent = RiskAgent()
+            self.risk_agent = RiskAgent(config=self.config)
             self.memory_agent = MemoryAgent()
             self.order_agent = OrderAgent()
 
@@ -217,7 +238,18 @@ class TradingOrchestrator:
         logger.info("-" * 40)
         logger.info(f"🔄 GLOBAL STATE: {self.state.name} | {datetime.now().strftime('%H:%M:%S')}")
 
-        # 0. SNAKE MODE Check (Works in Normal Mode too)
+        # 0. REFRESH CONFIG: Cargar cambios desde la UI/JSON
+        self.config = load_unified_config()
+        self.max_daily_trades = self.config.get('risk', {}).get('max_daily_trades', 10)
+        if hasattr(self, 'risk_agent'):
+            self.risk_agent.config = self.config
+            # Re-invocar init parcial de risk_agent para actualizar límites
+            self.risk_agent.max_daily_loss_pct = self.config.get("risk", {}).get("max_daily_loss_percent", 2.0)
+            self.risk_agent.max_open_positions = self.config.get("risk", {}).get("max_open_positions", 3)
+            self.risk_agent.risk_per_trade_pct = self.config.get("risk", {}).get("risk_per_trade_percent", 1.0)
+            self.risk_agent.max_position_size = self.config.get("risk", {}).get("max_position_size", 0.1)
+
+        # 0.5. SNAKE MODE Check (Works in Normal Mode too)
         self._process_snake_sessions()
         
         # 1. State Transition: IDLE -> OBSERVE
@@ -319,6 +351,13 @@ class TradingOrchestrator:
                             logger.info(f"🐍 Snake PROTECT: Break-Even #{ticket} -> {reason}")
                             new_sl = open_price
                             self.order_agent.modify_position(ticket, new_sl, pos_data.get('tp', 0))
+
+                    elif action == SnakeAction.RELEASE:
+                        reason = evaluation['reason']
+                        logger.info(f"🐍 Snake RELEASE: Releasing control of #{ticket} -> {reason}")
+                        # Marcar sesión como completada pero NO cerrar la posición
+                        self.storage.update_snake_session(session.id, "COMPLETED", evaluation['status'].value, pos_data.get('profit', 0), reason)
+                        logger.info(f"🐍 Snake Released Successfully (#{ticket})")
                 except Exception as e:
                     logger.error(f"Error processing individual Snake session #{session.ticket}: {e}")
 
@@ -395,7 +434,7 @@ class TradingOrchestrator:
                  risk_check = self.risk_agent.run({
                     "symbol": symbol,
                     "type": decision.action,
-                    "volume": 0.01,
+                    "volume": 0.1,  # Proponer 0.1 para que el risk agent lo ajuste según %
                     "signal_strength": decision.confidence,
                     "balance": self._get_balance(),
                     "open_positions": len(current_positions)
@@ -505,8 +544,8 @@ class TradingOrchestrator:
             
             logger.debug(f"📍 Posiciones abiertas: {num_positions}")
             
-            # AUTO-TRADE: Mantener mínimo 2 posiciones
-            min_positions = 2
+            # AUTO-TRADE: Mantener posiciones según config
+            min_positions = self.config.get('risk', {}).get('max_open_positions', 3)
             if num_positions < min_positions:
                 self._open_auto_trades(min_positions - num_positions, positions)
             
@@ -561,7 +600,13 @@ class TradingOrchestrator:
                 action = random.choice(["BUY", "SELL"])
             
             # Ejecutar trade con parámetros seguros
-            volume = 0.01  # Volumen mínimo
+            risk_pct = self.config.get('risk', {}).get('risk_per_trade_percent', 1.0)
+            balance = self._get_balance()
+            
+            # Simple volume calculation if sl is 50
+            volume = (balance * (risk_pct/100)) / (50 * 10)
+            volume = round(max(0.01, min(volume, 0.1)), 2)
+            
             sl_pips = 50   # Stop loss conservador
             tp_pips = 100  # Take profit 2:1
             
@@ -720,10 +765,11 @@ class TradingOrchestrator:
         try:
             connector = self.mt5
             if connector.connected:
-                # Sincronizar últimos 2 días cada 5 minutos
-                deals = connector.get_history_deals(days=2)
+                # Sincronizar últimos 15 días cada 5 minutos (antes 2 días)
+                # Ampliamos para evitar huecos por periodos de inactividad
+                deals = connector.get_history_deals(days=15)
                 if deals:
-                    self.storage.import_mt5_history(deals)
+                    self.storage.import_mt5_history(deals, connector=connector)
                     logger.debug(f"🔄 Sincronización en segundo plano completada ({len(deals)} deals)")
         except Exception as e:
             logger.error(f"Error en sincronización en segundo plano: {e}")
@@ -771,6 +817,16 @@ class TradingOrchestrator:
         # Ejecutar primer ciclo inmediatamente
         self.health_check_cycle()
         self.scraping_cycle()
+        
+        # Sincronización inicial profunda (catch-up)
+        logger.info("🕒 Ejecutando sincronización de historial catch-up (30 días)...")
+        try:
+            init_deals = self.mt5.get_history_deals(days=30)
+            if init_deals:
+                self.storage.import_mt5_history(init_deals, connector=self.mt5)
+        except Exception as e:
+            logger.error(f"Error en catch-up inicial: {e}")
+
         self.trading_cycle()
         self.generate_memory()  # Verificar si falta la de ayer
         

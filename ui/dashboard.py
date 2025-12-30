@@ -455,7 +455,7 @@ def get_cached_signals(_storage):
     signals = _storage.get_recent_signals(hours=24)
     return signals[:5] if signals else []
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=60)
 def get_cached_trade_history(_storage):
     return _storage.get_all_trade_results()
 
@@ -493,7 +493,7 @@ def render_header():
         st.caption(f"Última actualización: {datetime.now().strftime('%d/%m %H:%M:%S')}")
     
     with col2:
-        if st.button("🔄 Actualizar", use_container_width=True):
+        if st.button("🔄 Actualizar", width='stretch'):
             st.rerun()
 
 
@@ -783,7 +783,7 @@ def render_positions():
                             label_visibility="collapsed"
                         )
                     with c2:
-                        if st.button("🐍 Go", key=f"snake_k_{ticket}", type="secondary", use_container_width=True):
+                        if st.button("🐍 Go", key=f"snake_k_{ticket}", type="secondary", width='stretch'):
                             if storage:
                                 storage.create_snake_session(ticket, symbol, duration, pos.open_price, profit)
                                 st.rerun()
@@ -812,7 +812,7 @@ def render_news(storage):
             days = ["AYER", "HOY", "MAÑANA"]
             for i, d in enumerate(days):
                 active = d in st.session_state.cal_filter_day
-                if fcols[i].button(d, key=f"btn_day_{d}", use_container_width=True, 
+                if fcols[i].button(d, key=f"btn_day_{d}", width='stretch', 
                                  type="primary" if active else "secondary"):
                     if active:
                         if len(st.session_state.cal_filter_day) > 1:
@@ -826,7 +826,7 @@ def render_news(storage):
             for i in range(3):
                 with [sc1, sc2, sc3][i]:
                     active = (i+1) in st.session_state.cal_filter_impact
-                    if st.button(stars[i], key=f"btn_star_{i+1}", use_container_width=True,
+                    if st.button(stars[i], key=f"btn_star_{i+1}", width='stretch',
                                type="primary" if active else "secondary"):
                         if active:
                             if len(st.session_state.cal_filter_impact) > 1:
@@ -836,7 +836,7 @@ def render_news(storage):
                         st.rerun()
 
         with col_c3:
-            if st.button("🚀 Scrape Now", key="scrape_events_now", use_container_width=True):
+            if st.button("🚀 Scrape Now", key="scrape_events_now", width='stretch'):
                 with st.spinner("Scrapeando nuevas fuentes..."):
                     import subprocess
                     try:
@@ -846,7 +846,7 @@ def render_news(storage):
                     except Exception as e:
                         st.error(f"Error al iniciar scrapeo: {e}")
             
-            if st.button("🔄 Refrescar", key="refresh_events", use_container_width=True):
+            if st.button("🔄 Refrescar", key="refresh_events", width='stretch'):
                 get_cached_events.clear()
                 st.rerun()
         
@@ -1151,6 +1151,33 @@ def render_performance_chart(storage):
                 st.session_state['force_sync_type'] = "all"
         
         st.divider()
+        c_diag1, c_diag2 = st.columns([1, 1])
+        with c_diag1:
+            if st.button("🔍 Diagnosticar Salud de DB", use_container_width=True):
+                connector = get_mt5_connector()
+                with st.spinner("Analizando base de datos..."):
+                    health = storage.run_health_check(connector=connector)
+                    st.session_state['db_health'] = health
+        
+        with c_diag2:
+            if st.button("🛠️ Sincronización PROFUNDA", type="secondary", use_container_width=True):
+                # Forzar 60 días para cubrir cualquier hueco
+                st.session_state['force_sync_days'] = 60
+                st.session_state['force_sync_type'] = "deep"
+
+        # Mostrar resultados del diagnóstico si existen
+        if 'db_health' in st.session_state:
+            h = st.session_state['db_health']
+            cols = st.columns(4)
+            cols[0].metric("Físico", "✅ OK" if h['is_physically_ok'] else "❌ ERROR")
+            cols[1].metric("Duplicados", h['duplicates'])
+            cols[2].metric("Huérfanos", h['orphans'])
+            cols[3].metric("Desfase MT5", "⚠️ SI" if h['sync_gap_detected'] else "✅ NO")
+            
+            if h['sync_gap_detected'] or h['orphans'] > 0:
+                st.warning("⚠️ Se han detectado inconsistencias. Se recomienda 'Sincronización PROFUNDA'.")
+        
+        st.divider()
         if st.button("🗑️ RESETEAR / PONER A CERO", type="primary"):
             storage.clear_trade_history()
             st.cache_data.clear()
@@ -1176,10 +1203,14 @@ def render_performance_chart(storage):
                     dt_start = datetime.combine(f_date, datetime.min.time())
                     deals = connector.get_history_deals(from_date=dt_start)
                     msg = f"Historial desde {f_date} sincronizado."
+            elif sync_type == "deep":
+                # Deep sync 60 days
+                deals = connector.get_history_deals(days=60)
+                msg = "Sincronización PROFUNDA (60 días) completada."
             
             # Normal cleanup logic
             if deals:
-                storage.import_mt5_history(deals)
+                storage.import_mt5_history(deals, connector=connector)
                 st.success(msg)
                 # Clear trigger
                 st.session_state['force_sync_type'] = None
@@ -1261,7 +1292,7 @@ def render_performance_chart(storage):
         )
     )
     
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
 
 
@@ -1477,7 +1508,7 @@ def render_sidebar():
         if st.button("📊 Normal", 
                     type="primary" if not is_scalping else "secondary",
                     key="mode_normal",
-                    use_container_width=True):
+                    width='stretch'):
             update_config(trading_mode='normal')
             mode_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', 'trading_mode.txt')
             try:
@@ -1490,7 +1521,7 @@ def render_sidebar():
         if st.button("⚡ Scalper", 
                     type="primary" if is_scalping else "secondary",
                     key="mode_scalper",
-                    use_container_width=True):
+                    width='stretch'):
             update_config(trading_mode='scalping')
             mode_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', 'trading_mode.txt')
             try:
@@ -1533,24 +1564,24 @@ def render_sidebar():
     </div>
     """, unsafe_allow_html=True)
 
-    if st.sidebar.button("▶️ Iniciar Bot", use_container_width=True, type="primary" if not is_running else "secondary"):
+    if st.sidebar.button("▶️ Iniciar Bot", width='stretch', type="primary" if not is_running else "secondary"):
         update_config(bot_running=True)
         st.sidebar.success("Señal de INICIO enviada")
         st.rerun()
     
-    if st.sidebar.button("⏹️ Detener Bot", use_container_width=True, type="primary" if is_running else "secondary"):
+    if st.sidebar.button("⏹️ Detener Bot", width='stretch', type="primary" if is_running else "secondary"):
         update_config(bot_running=False)
         st.sidebar.warning("Señal de PARADA enviada")
         st.rerun()
         
     st.sidebar.divider()
     
-    if st.sidebar.button("🔄 Restablecer Configuración", use_container_width=True):
+    if st.sidebar.button("🔄 Restablecer Configuración", width='stretch'):
         reset_config()
         st.sidebar.info("Configuración restablecida")
         st.rerun()
 
-    if st.sidebar.button("🧹 Limpiar Historial de Trades", use_container_width=True):
+    if st.sidebar.button("🧹 Limpiar Historial de Trades", width='stretch'):
         storage = get_storage_instance()
         if storage:
             storage.clear_trade_history()
@@ -1562,7 +1593,7 @@ def render_sidebar():
             st.sidebar.success("Historial y eventos borrados")
             st.rerun()
 
-    if st.sidebar.button("📋 Limpiar Logs de Agentes", use_container_width=True):
+    if st.sidebar.button("📋 Limpiar Logs de Agentes", width='stretch'):
         storage = get_storage_instance()
         if storage:
             storage.clear_agent_logs()
@@ -1570,7 +1601,7 @@ def render_sidebar():
             st.sidebar.success("Logs de agentes borrados")
             st.rerun()
 
-    if st.sidebar.button("🚨 Cerrar Posiciones", use_container_width=True, type="primary"):
+    if st.sidebar.button("🚨 Cerrar Posiciones", width='stretch', type="primary"):
         with st.sidebar.status("Cerrando todas las posiciones..."):
             close_all_positions()
         st.sidebar.success("Órdenes de cierre enviadas")

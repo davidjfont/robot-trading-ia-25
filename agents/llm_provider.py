@@ -40,8 +40,8 @@ class LLMProvider:
         """Inicializa el proveedor LLM con configuración"""
         self.config = self._load_config(config_path)
         self.model = self.config.get("llm", {}).get("model", "mistral")
-        self.temperature = self.config.get("llm", {}).get("temperature", 0.3)
-        self.max_tokens = self.config.get("llm", {}).get("max_tokens", 500)
+        self.temperature = self.config.get("llm", {}).get("temperature", 0.1)  # Bajamos temperatura para más consistencia
+        self.max_tokens = self.config.get("llm", {}).get("max_tokens", 1024)
         self.client = None
         
         if OLLAMA_AVAILABLE:
@@ -181,7 +181,8 @@ Analiza el sentimiento del siguiente texto y responde SOLO en formato JSON:
     "impact": "high|medium|low",
     "reason": "<breve explicación>"
 }}
-Solo responde con el JSON, sin texto adicional.""".format(context=context)
+Solo responde con el JSON, sin texto adicional, sin preámbulos y sin markdown.
+Si no puedes determinar el sentimiento, responde neutral con score 0.""".format(context=context)
         
         response = self.generate(text, system_prompt=system_prompt)
         
@@ -205,10 +206,35 @@ Solo responde con el JSON, sin texto adicional.""".format(context=context)
                     content = content[4:]
             
             result = json.loads(content)
-            return result
-        except json.JSONDecodeError:
-            logger.warning(f"No se pudo parsear JSON: {response.content[:100]}")
-            # Intentar extraer sentiment básico
+            
+            # Validar campos mínimos
+            required = ["sentiment", "score", "impact"]
+            if all(k in result for k in required):
+                return result
+            else:
+                logger.warning(f"JSON incompleto de LLM: {result}")
+                raise ValueError("JSON incompleto")
+                
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.warning(f"Error parseando JSON de LLM: {e}. Contenido: {response.content[:100]}...")
+            # Fallback robusto: buscar campos con regex si el JSON está mal formado o truncado
+            try:
+                import re
+                sentiment_match = re.search(r'"sentiment":\s*"([^"]+)"', response.content)
+                score_match = re.search(r'"score":\s*([-+]?\d*\.?\d+)', response.content)
+                impact_match = re.search(r'"impact":\s*"([^"]+)"', response.content)
+                
+                if sentiment_match and score_match:
+                    return {
+                        "sentiment": sentiment_match.group(1),
+                        "score": float(score_match.group(1)),
+                        "impact": impact_match.group(1) if impact_match else "medium",
+                        "reason": "Parsed via regex (JSON failed)"
+                    }
+            except:
+                pass
+                
+            # Fallback final
             lower_content = response.content.lower()
             if "bullish" in lower_content:
                 return {"sentiment": "bullish", "score": 0.5, "impact": "medium", "reason": response.content[:100]}

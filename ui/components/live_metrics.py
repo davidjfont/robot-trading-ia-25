@@ -214,7 +214,7 @@ def render_pnl_chart():
         showlegend=False
     )
     
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
     st.caption(f"P&L Actual: €{current_pnl:.2f}")
 
 

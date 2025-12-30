@@ -71,9 +71,10 @@ class RiskAgent(BaseAgent):
         ("USDJPY", "EURJPY"): 0.75,
     }
     
-    def __init__(self, config_path: str = "config.yaml"):
-        super().__init__("RiskAgent")
-        self.config = self._load_config(config_path)
+    def __init__(self, config: Optional[Dict] = None, config_path: str = "config.yaml"):
+        super().__init__("RiskAgent", config=config)
+        if not config:
+            self.config = self._load_config(config_path)
         self.storage = get_storage()
         
         # Configuración de riesgo

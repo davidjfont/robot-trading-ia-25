@@ -31,14 +31,15 @@ class NewsScraper(BaseScraper):
         self.sources = [
             {
                 "name": "reuters",
-                "url": "https://www.reuters.com/markets/",
+                "url": "https://www.reuters.com/business/markets/",
                 "article_selector": "article",
                 "title_selector": "h3",
                 "summary_selector": "p",
                 "link_selector": "a[href]",
                 "time_selector": "time",
                 "weight": 0.4,
-                "enabled": True
+                "enabled": True,
+                "wait_time": 5
             },
             {
                 "name": "investing",

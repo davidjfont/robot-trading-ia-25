@@ -35,6 +35,7 @@ class ScalpRiskAgent:
         self.max_consecutive_losses = self.config.get('max_consecutive_losses', 2)
         self.max_spread_multiplier = self.config.get('max_spread_multiplier', 2.0)
         self.max_daily_loss_percent = self.config.get('max_daily_loss_percent', 2.0)
+        self.max_positions = self.config.get('max_positions', 3)
         
         # Estado
         self.session_trades = 0
@@ -76,6 +77,15 @@ class ScalpRiskAgent:
         else:
             self.blocked_until = None
             self.block_reason = None
+        
+        # 2.5 Verificar límite de posiciones abiertas
+        positions = self.mt5.get_positions()
+        if positions and len(positions) >= self.max_positions:
+            return {
+                'allowed': False,
+                'reason': f"Límite de posiciones alcanzado ({len(positions)}/{self.max_positions})",
+                'risk_level': 'blocked'
+            }
         
         # 2. Verificar límite de trades por sesión
         if self.session_trades >= self.max_trades_per_session:

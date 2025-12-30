@@ -38,15 +38,39 @@ class NewsAgent(BaseAgent):
             data: Configuración opcional (ej: {"sources": ["investing"]})
         """
         try:
-            # Ejecutar scrapers de forma síncrona usando asyncio.run
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
+            # Ejecutar scrapers de forma síncrona compartiendo sesión
+            async def run_scrapers_optimized():
+                news_items = []
+                calendar_items = []
+                try:
+                    # Iniciar playwright una sola vez
+                    await self.news_scraper.start()
+                    # Reutilizar el contexto para el otro scraper
+                    self.calendar_scraper.playwright = self.news_scraper.playwright
+                    self.calendar_scraper.browser = self.news_scraper.browser
+                    self.calendar_scraper.context = self.news_scraper.context
+                    self.calendar_scraper.page = await self.calendar_scraper.context.new_page()
+                    
+                    # Ejecutar ambos
+                    news_items = await self.news_scraper.scrape()
+                    calendar_items = await self.calendar_scraper.scrape()
+                finally:
+                    # Cerrar todo
+                    await self.calendar_scraper.stop() # Cierra su página
+                    await self.news_scraper.stop()     # Cierra navegador y playwright
+                
+                return news_items, calendar_items
+
             try:
-                news_items = loop.run_until_complete(self.news_scraper.run())
-                calendar_items = loop.run_until_complete(self.calendar_scraper.run())
-            finally:
-                loop.close()
+                news_items, calendar_items = asyncio.run(run_scrapers_optimized())
+            except RuntimeError:
+                # Fallback redundante pero robusto
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    news_items, calendar_items = loop.run_until_complete(run_scrapers_optimized())
+                finally:
+                    loop.close()
             
             # Guardar en base de datos
             news_saved = self.storage.save_news(news_items)

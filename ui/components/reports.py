@@ -19,7 +19,13 @@ from scraping.storage import get_storage
 def render_reports_panel():
     """Renderiza el panel de reportes"""
     
-    st.subheader("📋 Reportes y Análisis")
+    col_h1, col_h2 = st.columns([3, 1])
+    with col_h1:
+        st.subheader("📋 Reportes y Análisis")
+    with col_h2:
+        if st.button("🔄 Sincronizar Ahora", use_container_width=True, help="Refresca el historial desde MT5 inmediatamente"):
+            st.session_state['force_sync_type'] = "all"
+            st.rerun()
     
     # Tabs para diferentes reportes
     tab1, tab2, tab3 = st.tabs(["📊 Métricas", "📝 Journal", "📤 Exportar"])
@@ -113,9 +119,9 @@ def render_metrics_report():
                 'Expectativa'
             ],
             'Valor': [
-                metrics['total_trades'],
-                metrics['winning_trades'],
-                metrics['losing_trades'],
+                str(metrics['total_trades']),
+                str(metrics['winning_trades']),
+                str(metrics['losing_trades']),
                 f"€{metrics['avg_winning_trade']:.2f}",
                 f"€{metrics['avg_losing_trade']:.2f}",
                 f"{abs(metrics['avg_winning_trade'] / metrics['avg_losing_trade']) if metrics['avg_losing_trade'] != 0 else 0:.2f} (Real)",
@@ -143,8 +149,8 @@ def render_metrics_report():
                 f"{metrics['sortino_ratio']:.2f}",
                 f"{metrics['calmar_ratio']:.2f}",
                 f"{metrics['recovery_factor']:.2f}",
-                metrics['max_consecutive_wins'],
-                metrics['max_consecutive_losses']
+                str(metrics['max_consecutive_wins']),
+                str(metrics['max_consecutive_losses'])
             ]
         })
         st.dataframe(risk_df, width='stretch', hide_index=True)
@@ -174,7 +180,7 @@ def render_metrics_report():
             template="plotly_dark"
         )
         
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
 
 def render_trade_journal():
@@ -229,7 +235,7 @@ def render_trade_journal():
                 lambda x: 'color: green' if isinstance(x, (int, float)) and x > 0 else 'color: red' if isinstance(x, (int, float)) and x < 0 else '',
                 subset=['Profit', 'Pips']
             ),
-            use_container_width=True
+            width='stretch'
         )
         return
     
@@ -263,7 +269,7 @@ def render_trade_journal():
             lambda x: 'color: green' if isinstance(x, (int, float)) and x > 0 else 'color: red' if isinstance(x, (int, float)) and x < 0 else '',
             subset=['Profit']
         ),
-        use_container_width=True
+        width='stretch'
     )
 
     
