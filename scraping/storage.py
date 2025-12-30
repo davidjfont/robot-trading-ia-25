@@ -508,13 +508,10 @@ class Storage:
                 
                 if not trade:
                     # Si el ticket es nuevo en nuestra DB, intentamos tener el trade completo
-                    # (ENTRADA + SALIDA)
-                    
                     # 1. Caso Ideal: Ambos deals están en el batch actual
-                    entry_deal = next((d for d in t_deals if d.get('entry_type') == 0), None)
-                    exit_deal = next((d for d in t_deals if d.get('entry_type') == 1), None)
+                    # (Ya los tenemos en entry_deal y exit_deal)
                     
-                    # 2. Si falta uno y tenemos el connector, pedimos el historial COMPLETO de ese ticket
+                    # 2. Si falta alguno y tenemos el connector, pedimos el historial COMPLETO de ese ticket
                     if (not entry_deal or not exit_deal) and connector:
                         logger.debug(f"🔍 Trade #{ticket} incompleto en batch. Pidiendo historial completo a MT5...")
                         full_ticket_deals = connector.get_history_deals_by_ticket(ticket)
@@ -533,6 +530,7 @@ class Storage:
                             status="open"
                         )
                         session.add(trade)
+                        logger.debug(f"🆕 Añadido trade #{ticket} ({trade.symbol}) como 'open'")
                     elif exit_deal:
                         # Fallback extremo si no encontramos la entrada ni con el connector
                         trade = TradeHistory(
@@ -545,21 +543,27 @@ class Storage:
                             status="open"
                         )
                         session.add(trade)
-                
-                    if trade.status == "closed":
-                        # Si teníamos el open_price estimado o en 0 (porque no estaba en la ventana inicial)
-                        # y ahora tenemos el entry_deal real, actualizarlo.
-                        if entry_deal:
-                             # Verificamos si los datos actuales son estimaciones o están vacíos
-                             is_estimated = (trade.open_price == 0 or trade.open_price == trade.close_price or trade.opened_at == trade.closed_at - timedelta(hours=1))
-                             if is_estimated:
-                                 trade.open_price = entry_deal['price']
-                                 trade.opened_at = entry_deal['timestamp']
-                                 logger.debug(f"🛠️ Reconstrucción exitosa para #{ticket}: Entrada fijada a {trade.open_price}")
+                        logger.debug(f"🆕 Añadido trade #{ticket} ({trade.symbol}) desde deal de salida (entrada estimada)")
 
-                        logger.success(f"📈 Trade #{ticket} ({trade.symbol}) importado/actualizado como CERRADO (Profit: {trade.profit:.2f})")
-                
-                imported_count += 1
+                # Una vez que tenemos el objeto 'trade' (nuevo o existente), actualizamos su estado
+                if trade:
+                    # Actualizar precios si encontramos mejores datos
+                    if entry_deal and trade.status == "open":
+                        trade.open_price = entry_deal['price']
+                        trade.opened_at = entry_deal['timestamp']
+                    
+                    if exit_deal:
+                        # Marcar como CERRADO
+                        trade.close_price = exit_deal['price']
+                        trade.closed_at = exit_deal['timestamp']
+                        # Profit total = profit + commission + swap
+                        trade.profit = (exit_deal.get('profit', 0) or 0) + \
+                                       (exit_deal.get('commission', 0) or 0) + \
+                                       (exit_deal.get('swap', 0) or 0)
+                        trade.status = "closed"
+                        logger.success(f"📈 Trade #{ticket} ({trade.symbol}) actualizado como CERRADO (Profit: {trade.profit:.2f})")
+                    
+                    imported_count += 1
             
             session.commit()
             if imported_count > 0:
@@ -599,15 +603,37 @@ class Storage:
                 return {"total_trades": 0}
             
             total_profit = sum(t.profit or 0 for t in trades)
-            wins = sum(1 for t in trades if (t.profit or 0) > 0)
+            wins = [t for t in trades if (t.profit or 0) > 0]
+            losses = [t for t in trades if (t.profit or 0) <= 0]
+            
+            winning_trades = len(wins)
+            losing_trades = len(losses)
+            win_rate = winning_trades / len(trades) if trades else 0
+            
+            avg_win = sum(t.profit for t in wins) / winning_trades if winning_trades > 0 else 0
+            avg_loss = abs(sum(t.profit for t in losses) / losing_trades) if losing_trades > 0 else 0
+            
+            # 1. Expectancy = (Probability of Win * Avg Win) - (Probability of Loss * Avg Loss)
+            expectancy = (win_rate * avg_win) - ((1 - win_rate) * avg_loss)
+            
+            # 2. Profit / Time (Minutes)
+            total_duration_mins = 0
+            for t in trades:
+                if t.closed_at and t.opened_at:
+                    total_duration_mins += (t.closed_at - t.opened_at).total_seconds() / 60
+            
+            profit_per_time = total_profit / total_duration_mins if total_duration_mins > 0 else 0
             
             return {
                 "total_trades": len(trades),
-                "winning_trades": wins,
-                "losing_trades": len(trades) - wins,
-                "win_rate": wins / len(trades) if trades else 0,
-                "total_profit": total_profit,
-                "avg_profit": total_profit / len(trades) if trades else 0
+                "winning_trades": winning_trades,
+                "losing_trades": losing_trades,
+                "win_rate": win_rate,
+                "total_profit": round(total_profit, 2),
+                "avg_profit": round(total_profit / len(trades), 2) if trades else 0,
+                "expectancy": round(expectancy, 2),
+                "profit_per_minute": round(profit_per_time, 4),
+                "total_duration_mins": round(total_duration_mins, 2)
             }
             
         finally:

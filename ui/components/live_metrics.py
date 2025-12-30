@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from mt5.connector import MT5Connector
 from agents.risk_agent import RiskAgent
+from scraping.storage import get_storage
 
 
 def render_live_metrics():
@@ -99,8 +100,9 @@ def render_quick_stats(account: Dict, positions: List, risk: Dict):
         }
         
         st.metric(
-            "Estado",
-            f"{status_icons.get(status, '⚪')} {status.upper()}"
+            "Governance",
+            f"{status_icons.get(status, '⚪')} {status.upper()}",
+            delta=f"{risk.get('risk_budget_remaining', 1.0):.0%} Budget"
         )
 
 
@@ -121,11 +123,30 @@ def render_risk_gauges(risk: Dict, balance: float):
     
     with col3:
         margin_used = 100 - risk.get('margin_free_pct', 100)
-        render_mini_gauge("Margen Usado", margin_used, 70, "%")
+        render_mini_gauge("Risk Exposure", margin_used, 70, "%")
     
     with col4:
-        consec = risk.get('consecutive_losses', 0)
-        render_mini_gauge("Pérdidas Seguidas", consec, 3, "")
+        consec = risk.get('streak_count', 0)
+        render_mini_gauge("Streak Protection", consec, 3, "")
+    
+    # Nueva fila de métricas avanzadas
+    st.markdown("<br>", unsafe_allow_html=True)
+    col5, col6, col7, col8 = st.columns(4)
+    
+    storage = get_storage()
+    stats = storage.get_trade_stats(days=7) # Ultima semana
+    
+    with col5:
+        st.metric("Expectancy", f"€{stats.get('expectancy', 0):.2f}")
+    
+    with col6:
+        st.metric("Profit/Min", f"€{stats.get('profit_per_minute', 0):.4f}")
+    
+    with col7:
+        st.metric("Win Rate", f"{stats.get('win_rate', 0):.1%}")
+    
+    with col8:
+        st.metric("Daily DD", f"{risk.get('drawdown_pct', 0):.1f}%")
 
 
 def render_mini_gauge(title: str, current: float, limit: float, unit: str):

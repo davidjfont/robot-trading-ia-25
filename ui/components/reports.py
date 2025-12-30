@@ -140,8 +140,8 @@ def render_metrics_report():
                 'Sortino Ratio',
                 'Calmar Ratio',
                 'Recovery Factor',
-                'Max Rachas +',
-                'Max Rachas -'
+                'Max Streaks +',
+                'Max Streaks -'
             ],
             'Valor': [
                 f"€{metrics['max_drawdown']:.2f}",
@@ -149,8 +149,8 @@ def render_metrics_report():
                 f"{metrics['sortino_ratio']:.2f}",
                 f"{metrics['calmar_ratio']:.2f}",
                 f"{metrics['recovery_factor']:.2f}",
-                str(metrics['max_consecutive_wins']),
-                str(metrics['max_consecutive_losses'])
+                str(metrics['max_streak_wins']),
+                str(metrics['max_streak_losses'])
             ]
         })
         st.dataframe(risk_df, width='stretch', hide_index=True)

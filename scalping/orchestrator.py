@@ -357,9 +357,9 @@ class ScalpingOrchestrator:
             **self.session_stats,
             'risk_status': {
                 'session_trades': self.risk_agent.session_trades,
-                'consecutive_losses': self.risk_agent.consecutive_losses,
+                'streak_count': self.risk_agent.streak_count,
                 'daily_pnl': self.risk_agent.daily_pnl,
-                'blocked': self.risk_agent.blocked_until is not None
+                'is_in_cooldown': self.risk_agent.cooldown_until is not None
             },
             'learning_profile': self.learning_agent.get_trading_profile()
         }

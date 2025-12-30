@@ -37,13 +37,13 @@ class ScalpRiskAgent:
         self.max_daily_loss_percent = self.config.get('max_daily_loss_percent', 2.0)
         self.max_positions = self.config.get('max_positions', 3)
         
-        # Estado
+        # Estado (Gobernanza)
         self.session_trades = 0
-        self.consecutive_losses = 0
+        self.streak_count = 0  # Antes consecutive_losses
         self.session_start = datetime.now()
         self.daily_pnl = 0.0
-        self.blocked_until = None
-        self.block_reason = None
+        self.cooldown_until = None
+        self.cooldown_reason = None
         
         # Spreads normales por par
         self.normal_spreads = {
@@ -66,17 +66,17 @@ class ScalpRiskAgent:
                 'risk_level': str  # 'low', 'medium', 'high', 'blocked'
             }
         """
-        # 1. Verificar bloqueo temporal
-        if self.blocked_until and datetime.now() < self.blocked_until:
-            remaining = (self.blocked_until - datetime.now()).seconds
+        # 1. Verificar Cooldown / Streak Protection
+        if self.cooldown_until and datetime.now() < self.cooldown_until:
+            remaining = (self.cooldown_until - datetime.now()).seconds
             return {
                 'allowed': False,
-                'reason': f"Bloqueado: {self.block_reason} ({remaining}s restantes)",
+                'reason': f"⏳ COOLDOWN: {self.cooldown_reason} ({remaining}s restantes)",
                 'risk_level': 'blocked'
             }
         else:
-            self.blocked_until = None
-            self.block_reason = None
+            self.cooldown_until = None
+            self.cooldown_reason = None
         
         # 2.5 Verificar límite de posiciones abiertas
         positions = self.mt5.get_positions()
@@ -95,12 +95,12 @@ class ScalpRiskAgent:
                 'risk_level': 'blocked'
             }
         
-        # 3. Verificar pérdidas consecutivas
-        if self.consecutive_losses >= self.max_consecutive_losses:
+        # 3. Verificar Streak Protection
+        if self.streak_count >= self.max_consecutive_losses:
             self._apply_cooldown(300)  # 5 minutos de cooldown
             return {
                 'allowed': False,
-                'reason': f"{self.consecutive_losses} pérdidas consecutivas - cooldown activado",
+                'reason': f"🛡️ STREAK PROTECTION: {self.streak_count} pérdidas consecutivas",
                 'risk_level': 'blocked'
             }
         
@@ -132,10 +132,10 @@ class ScalpRiskAgent:
         
         return {
             'allowed': True,
-            'reason': 'Condiciones de riesgo aceptables',
+            'reason': 'Condiciones de gobernanza aceptables',
             'risk_level': risk_level,
             'session_trades': self.session_trades,
-            'consecutive_losses': self.consecutive_losses
+            'streak_count': self.streak_count
         }
     
     def register_trade_result(self, profit: float, ticket: int):
@@ -144,18 +144,18 @@ class ScalpRiskAgent:
         self.daily_pnl += profit
         
         if profit < 0:
-            self.consecutive_losses += 1
-            logger.warning(f"[ScalpRisk] Pérdida #{ticket}: {profit:.2f} | Consecutivas: {self.consecutive_losses}")
+            self.streak_count += 1
+            logger.warning(f"[ScalpRisk] Streak Alert #{ticket}: {profit:.2f} | Consecutivas: {self.streak_count}")
         else:
-            self.consecutive_losses = 0
-            logger.info(f"[ScalpRisk] Ganancia #{ticket}: {profit:.2f} | Reseteo consecutivas")
+            self.streak_count = 0
+            logger.info(f"[ScalpRisk] Profit Registrado #{ticket}: {profit:.2f} | Streak reseteado")
         
         # Guardar log
         if self.storage:
             self.storage.save_agent_log(
                 "ScalpRiskAgent",
                 f"Trade result #{ticket}",
-                f"P&L: {profit:.2f} | Session: {self.session_trades} | Consec: {self.consecutive_losses}",
+                f"P&L: {profit:.2f} | Session: {self.session_trades} | Streak: {self.streak_count}",
                 profit >= 0,
                 0
             )
@@ -175,14 +175,14 @@ class ScalpRiskAgent:
         self._block_session(reason)
     
     def reset_session(self):
-        """Reinicia contadores de sesión (llamar al inicio de cada día)"""
-        logger.info("[ScalpRisk] Reseteando sesión")
+        """Reinicia contadores de gobernanza de sesión"""
+        logger.info("[ScalpRisk] Reseteando gobernanza")
         self.session_trades = 0
-        self.consecutive_losses = 0
+        self.streak_count = 0
         self.session_start = datetime.now()
         self.daily_pnl = 0.0
-        self.blocked_until = None
-        self.block_reason = None
+        self.cooldown_until = None
+        self.cooldown_reason = None
     
     def _check_spread(self, symbol: str) -> Dict[str, Any]:
         """Verifica que el spread no esté muy alto"""
@@ -215,8 +215,8 @@ class ScalpRiskAgent:
         session_ratio = self.session_trades / self.max_trades_per_session
         risk_score += session_ratio * 30
         
-        # Factor: pérdidas consecutivas
-        loss_ratio = self.consecutive_losses / self.max_consecutive_losses
+        # Factor: Streak count
+        loss_ratio = self.streak_count / self.max_consecutive_losses
         risk_score += loss_ratio * 50
         
         # Factor: P&L diario
@@ -241,16 +241,16 @@ class ScalpRiskAgent:
         return 1000
     
     def _apply_cooldown(self, seconds: int):
-        """Aplica período de cooldown"""
-        self.blocked_until = datetime.now() + timedelta(seconds=seconds)
-        self.block_reason = "Cooldown por pérdidas consecutivas"
-        logger.warning(f"[ScalpRisk] Cooldown de {seconds}s activado")
+        """Aplica período de Cooldown dinámico"""
+        self.cooldown_until = datetime.now() + timedelta(seconds=seconds)
+        self.cooldown_reason = "Streak Protection activada"
+        logger.warning(f"[ScalpRisk] Governance Cooldown de {seconds}s activado")
     
     def _block_session(self, reason: str):
-        """Bloquea trading por el resto de la sesión"""
-        # Bloquear hasta las 23:59
+        """Activa protección de sesión por el resto del día"""
+        # Cooldown hasta las 23:59
         now = datetime.now()
         end_of_day = now.replace(hour=23, minute=59, second=59)
-        self.blocked_until = end_of_day
-        self.block_reason = reason
-        logger.error(f"[ScalpRisk] 🛑 SESIÓN BLOQUEADA: {reason}")
+        self.cooldown_until = end_of_day
+        self.cooldown_reason = reason
+        logger.error(f"[ScalpRisk] 🛑 PROTECCIÓN ACTIVA: {reason}")

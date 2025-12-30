@@ -82,9 +82,9 @@ class TradingAnalytics:
             'risk_reward_ratio': self.risk_reward_ratio,
             'avg_r_multiple': self.avg_r_multiple,
             
-            # Rachas
-            'max_consecutive_wins': self.max_consecutive_wins,
-            'max_consecutive_losses': self.max_consecutive_losses,
+            # Rachas (Streaks)
+            'max_streak_wins': self.max_streak_wins,
+            'max_streak_losses': self.max_streak_losses,
             
             # Recovery
             'recovery_factor': self.recovery_factor,
@@ -327,13 +327,13 @@ class TradingAnalytics:
         return np.mean([t.r_multiple for t in self.trades])
     
     @property
-    def max_consecutive_wins(self) -> int:
-        """Máxima racha ganadora"""
+    def max_streak_wins(self) -> int:
+        """Máxima racha ganadora (Streak)"""
         return self._max_consecutive(lambda t: t.profit > 0)
     
     @property
-    def max_consecutive_losses(self) -> int:
-        """Máxima racha perdedora"""
+    def max_streak_losses(self) -> int:
+        """Máxima racha perdedora (Streak)"""
         return self._max_consecutive(lambda t: t.profit < 0)
     
     def _max_consecutive(self, condition) -> int:
@@ -400,8 +400,8 @@ class TradingAnalytics:
             'expectancy_pips': 0.0,
             'risk_reward_ratio': 0.0,
             'avg_r_multiple': 0.0,
-            'max_consecutive_wins': 0,
-            'max_consecutive_losses': 0,
+            'max_streak_wins': 0,
+            'max_streak_losses': 0,
             'recovery_factor': 0.0,
             'avg_trade_duration': 0.0,
             'total_trading_days': 0
@@ -469,10 +469,10 @@ Recovery Factor: {metrics['recovery_factor']:.3f}
 Expectativa/Operación: €{metrics['expectancy']:.2f}
 Expectativa (pips): {metrics['expectancy_pips']:.1f}
 
-🔥 RACHAS
+🔥 STREAKS
 ───────────────────────────────────────────────────────────
-Máx rachas ganadoras: {metrics['max_consecutive_wins']}
-Máx rachas perdedoras: {metrics['max_consecutive_losses']}
+Máx racha ganadora: {metrics['max_streak_wins']}
+Máx racha perdedora: {metrics['max_streak_losses']}
 
 ⏱️ TIEMPO
 ───────────────────────────────────────────────────────────

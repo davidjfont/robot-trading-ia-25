@@ -35,6 +35,7 @@ class RiskAssessment:
     risk_score: float  # 0-1 donde 1 es máximo riesgo
     reasons: List[str]
     status: RiskStatus = RiskStatus.NORMAL
+    risk_budget_remaining: float = 1.0
 
 
 @dataclass
@@ -93,13 +94,13 @@ class RiskAgent(BaseAgent):
         self.pause_after_losses_minutes = 60  # Pausa tras pérdidas
         self.correlation_threshold = 0.75     # Umbral correlación
         
-        # Estado interno
+        # Estado interno (Gobernanza)
         self._daily_loss = 0.0
         self._daily_profit = 0.0
         self._daily_reset_date = datetime.now().date()
-        self._consecutive_losses = 0
+        self._streak_count = 0  # Antes _consecutive_losses
         self._last_loss_time: Optional[datetime] = None
-        self._blocked_until: Optional[datetime] = None
+        self._cooldown_until: Optional[datetime] = None  # Antes _blocked_until
         self._current_status = RiskStatus.NORMAL
         self._decisions_log: List[RiskDecision] = []
         self._open_positions: Dict[str, str] = {}  # symbol: direction
@@ -215,13 +216,13 @@ class RiskAgent(BaseAgent):
         self._check_daily_reset()
         
         # ═══════════════════════════════════════════════════════════
-        # REGLA 1: BLOQUEO TEMPORAL (tras pérdidas consecutivas)
+        # REGLA 1: COOLDOWN / STREAK PROTECTION
         # ═══════════════════════════════════════════════════════════
-        if self._is_blocked():
+        if self._is_in_cooldown():
             approved = False
             status = RiskStatus.BLOCKED
-            remaining = (self._blocked_until - datetime.now()).seconds // 60
-            reasons.append(f"🚫 BLOQUEADO: {remaining} minutos restantes (tras {self.max_consecutive_losses} pérdidas)")
+            remaining = (self._cooldown_until - datetime.now()).seconds // 60
+            reasons.append(f"⏳ COOLDOWN: {remaining} min restantes (Streak Protection: {self._streak_count} pérdidas)")
             return RiskAssessment(
                 approved=False,
                 max_volume=0,
@@ -229,7 +230,8 @@ class RiskAgent(BaseAgent):
                 recommended_tp=0,
                 risk_score=1.0,
                 reasons=reasons,
-                status=status
+                status=status,
+                risk_budget_remaining=0.0
             )
         
         # ═══════════════════════════════════════════════════════════
@@ -344,7 +346,8 @@ class RiskAgent(BaseAgent):
             recommended_tp=round(recommended_tp, 1),
             risk_score=round(risk_score, 2),
             reasons=reasons,
-            status=status
+            status=status,
+            risk_budget_remaining=round(daily_factor * consecutive_factor, 2)
         )
     
     def _check_correlation(
@@ -397,10 +400,10 @@ class RiskAgent(BaseAgent):
         if daily_loss_pct > 0:
             daily_factor = max(0.5, 1 - (daily_loss_pct / self.max_daily_loss_pct))
         
-        # Factor por pérdidas consecutivas
+        # Factor por pérdidas consecutivas (Streak Impact)
         consecutive_factor = 1.0
-        if self._consecutive_losses > 0:
-            consecutive_factor = max(0.3, 1 - (self._consecutive_losses * 0.2))
+        if self._streak_count > 0:
+            consecutive_factor = max(0.3, 1 - (self._streak_count * 0.2))
         
         adjusted = min(
             proposed_volume,
@@ -410,22 +413,22 @@ class RiskAgent(BaseAgent):
         
         return round(max(adjusted, 0.01), 2)
     
-    def _is_blocked(self) -> bool:
-        """Verifica si el trading está bloqueado temporalmente"""
-        if self._blocked_until and datetime.now() < self._blocked_until:
+    def _is_in_cooldown(self) -> bool:
+        """Verifica si estamos en periodo de Cooldown"""
+        if self._cooldown_until and datetime.now() < self._cooldown_until:
             return True
         return False
     
     def _check_daily_reset(self):
-        """Resetea contadores diarios si cambió el día"""
+        """Resetea contadores diarios de gobernanza si cambió el día"""
         today = datetime.now().date()
         if today != self._daily_reset_date:
             self._daily_loss = 0.0
             self._daily_profit = 0.0
             self._daily_reset_date = today
-            self._consecutive_losses = 0
-            self._blocked_until = None
-            logger.info("✅ Contadores diarios de riesgo reseteados")
+            self._streak_count = 0
+            self._cooldown_until = None
+            logger.info("✅ Gobernanza: Límites diarios reseteados")
     
     def record_trade_result(self, profit: float, symbol: str):
         """
@@ -438,25 +441,37 @@ class RiskAgent(BaseAgent):
         self._check_daily_reset()
         
         if profit < 0:
-            # Pérdida
+            # Pérdida registrada en el Streak
             loss = abs(profit)
             self._daily_loss += loss
-            self._consecutive_losses += 1
+            self._streak_count += 1
             self._last_loss_time = datetime.now()
             
-            logger.warning(f"❌ Pérdida registrada: {loss}. Consecutivas: {self._consecutive_losses}")
+            logger.warning(f"📉 Streak Alert: {self._streak_count} pérdidas. Pérdida: {loss}")
             
-            # Aplicar bloqueo si hay muchas pérdidas consecutivas
-            if self._consecutive_losses >= self.max_consecutive_losses:
-                self._blocked_until = datetime.now() + timedelta(minutes=self.pause_after_losses_minutes)
-                logger.error(f"🚫 BLOQUEO ACTIVADO: {self.pause_after_losses_minutes} min tras {self._consecutive_losses} pérdidas")
+            # Evaluar si activamos Cooldown (Streak Protection)
+            if self._streak_count >= self.max_consecutive_losses:
+                if self.check_market_conditions():
+                    self._cooldown_until = datetime.now() + timedelta(minutes=self.pause_after_losses_minutes)
+                    logger.error(f"🛡️ STREAK PROTECTION: Cooldown {self.pause_after_losses_minutes} min activado.")
+                else:
+                    logger.info("ℹ️ Streak Protection omitida: Mercado en régimen favorabla/bajo spread.")
         else:
-            # Ganancia
+            # Ganancia restablece el Streak y recupera Budget
             self._daily_profit += profit
-            self._consecutive_losses = 0  # Resetear racha
-            self._daily_loss = max(0, self._daily_loss - profit)  # Compensar pérdidas
+            self._streak_count = 0 
+            self._daily_loss = max(0, self._daily_loss - profit)
             
-            logger.info(f"✅ Ganancia registrada: {profit}")
+            logger.info(f"💰 Profit registrado: {profit}. Streak reseteado.")
+    
+    def check_market_conditions(self) -> bool:
+        """
+        Evalúa si el mercado justifica un Cooldown tras pérdidas.
+        Retorna True si el mercado es adverso (debe pausar).
+        """
+        # TODO: Integrar con datos reales de spread/volatilidad
+        # Por ahora, simulamos basado en el RiskAgent o pasamos parámetros externos
+        return True 
     
     def record_loss(self, amount: float):
         """Alias para compatibilidad"""
@@ -467,10 +482,10 @@ class RiskAgent(BaseAgent):
         self.record_trade_result(amount, "N/A")
     
     def get_daily_status(self, balance: float) -> Dict[str, Any]:
-        """Obtiene estado de riesgo diario"""
+        """Obtiene estado de gobernanza diario"""
         self._check_daily_reset()
         loss_pct = (self._daily_loss / balance) * 100 if balance > 0 else 0
-        remaining = self.max_daily_loss_pct - loss_pct
+        remaining_budget = self.max_daily_loss_pct - loss_pct
         
         return {
             "daily_loss": round(self._daily_loss, 2),
@@ -478,24 +493,24 @@ class RiskAgent(BaseAgent):
             "daily_net": round(self._daily_profit - self._daily_loss, 2),
             "daily_loss_pct": round(loss_pct, 2),
             "max_allowed_pct": self.max_daily_loss_pct,
-            "remaining_risk_pct": round(max(remaining, 0), 2),
-            "consecutive_losses": self._consecutive_losses,
-            "is_blocked": self._is_blocked(),
-            "blocked_until": self._blocked_until.isoformat() if self._blocked_until else None,
-            "can_trade": not self._is_blocked() and loss_pct < self.max_daily_loss_pct,
+            "risk_budget_remaining": round(max(remaining_budget / self.max_daily_loss_pct, 0), 2),
+            "streak_count": self._streak_count,
+            "is_in_cooldown": self._is_in_cooldown(),
+            "cooldown_until": self._cooldown_until.isoformat() if self._cooldown_until else None,
+            "can_trade": not self._is_in_cooldown() and loss_pct < self.max_daily_loss_pct,
             "status": self._current_status.value,
             "date": self._daily_reset_date.isoformat()
         }
     
     def get_full_status(self, balance: float, equity: float, margin_free: float) -> Dict[str, Any]:
-        """Obtiene estado completo de riesgo"""
+        """Obtiene estado completo de gobernanza de riesgo"""
         daily = self.get_daily_status(balance)
         
         drawdown_pct = ((balance - equity) / balance) * 100 if balance > 0 else 0
         margin_free_pct = (margin_free / balance) * 100 if balance > 0 else 0
         
-        # Determinar color/estado
-        if daily["is_blocked"] or daily["daily_loss_pct"] >= self.max_daily_loss_pct:
+        # Determinar color/estado según Gobernanza
+        if daily["is_in_cooldown"] or daily["daily_loss_pct"] >= self.max_daily_loss_pct:
             status = RiskStatus.BLOCKED
             color = "red"
         elif drawdown_pct >= self.max_drawdown_pct:
@@ -504,7 +519,7 @@ class RiskAgent(BaseAgent):
         elif daily["daily_loss_pct"] >= self.max_daily_loss_pct * 0.75:
             status = RiskStatus.WARNING
             color = "orange"
-        elif self._consecutive_losses >= 2:
+        elif self._streak_count >= 2:
             status = RiskStatus.CAUTION
             color = "yellow"
         else:
@@ -569,18 +584,18 @@ class RiskAgent(BaseAgent):
         return volume
     
     def emergency_stop(self) -> bool:
-        """Activa parada de emergencia - bloquea todo trading"""
-        self._blocked_until = datetime.now() + timedelta(hours=24)
+        """Activa parada de emergencia - Cooldown global 24h"""
+        self._cooldown_until = datetime.now() + timedelta(hours=24)
         self._current_status = RiskStatus.EMERGENCY
-        logger.critical("🚨 EMERGENCY STOP ACTIVADO - Trading bloqueado 24h")
+        logger.critical("🚨 EMERGENCY STOP ACTIVADO - Cooldown 24h")
         return True
     
-    def reset_blocks(self):
-        """Reset manual de bloqueos (usar con precaución)"""
-        self._blocked_until = None
-        self._consecutive_losses = 0
+    def reset_governance(self):
+        """Reset manual de gobernanza (usar con precaución)"""
+        self._cooldown_until = None
+        self._streak_count = 0
         self._current_status = RiskStatus.NORMAL
-        logger.warning("⚠️ Bloqueos reseteados manualmente")
+        logger.warning("⚠️ Gobernanza reseteada manualmente")
 
 
 if __name__ == "__main__":

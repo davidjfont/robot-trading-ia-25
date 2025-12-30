@@ -14,9 +14,9 @@ from mt5.connector import MT5Connector
 
 
 def render_risk_monitor():
-    """Renderiza el panel de monitoreo de riesgo"""
+    """Renderiza el panel de gobernanza de riesgo en tiempo real"""
     
-    st.subheader("🛡️ Monitor de Riesgo")
+    st.subheader("🛡️ Gobernanza de Riesgo")
     
     # Obtener datos de la cuenta
     account_data = get_account_data()
@@ -46,7 +46,7 @@ def render_risk_monitor():
     
     with col1:
         render_risk_gauge(
-            title="Pérdida Diaria",
+            title="Daily Risk Budget",
             current=daily_loss_percent,
             limit=max_daily_loss,
             unit="%",
@@ -119,10 +119,10 @@ def render_risk_status(daily_loss: float, daily_limit: float,
     
     # Determinar estado general
     if daily_loss >= daily_limit or drawdown >= dd_limit:
-        status = "CRÍTICO"
+        status = "COOLDOWN"
         color = "#ff1744"
         icon = "🔴"
-        message = "⚠️ Se ha alcanzado un límite de riesgo. Trading pausado automáticamente."
+        message = "🛡️ Streak Protection activada. Governance Cooldown en progreso."
     elif daily_loss >= daily_limit * 0.75 or drawdown >= dd_limit * 0.75:
         status = "ALERTA"
         color = "#ff9800"
@@ -137,7 +137,7 @@ def render_risk_status(daily_loss: float, daily_limit: float,
         status = "NORMAL"
         color = "#00c853"
         icon = "🟢"
-        message = "✅ Todos los parámetros de riesgo están dentro de límites."
+        message = "✅ Gobernanza activa: Parámetros dentro del Risk Budget."
     
     st.markdown(f"""
     <div style="display: flex; align-items: center; padding: 1rem; background: linear-gradient(90deg, {color}22, transparent); border-left: 4px solid {color}; border-radius: 5px;">
