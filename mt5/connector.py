@@ -9,6 +9,13 @@ from loguru import logger
 import time
 import yaml
 import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+try:
+    from core.symbols import normalize_symbol
+except ImportError:
+    def normalize_symbol(s, c=""): return s
 
 try:
     import MetaTrader5 as mt5
@@ -236,6 +243,12 @@ class MT5Connector:
             }
         return None
     
+    def _get_mapped_symbol(self, symbol: str) -> str:
+        """Helper para obtener el símbolo mapeado según el broker"""
+        account_info = mt5.account_info()
+        company = account_info.company if account_info else ""
+        return normalize_symbol(symbol, company)
+
     def get_tick(self, symbol: str) -> Optional[Tick]:
         """
         Obtiene el tick actual de un símbolo
@@ -246,6 +259,14 @@ class MT5Connector:
         if not self.ensure_connected():
             return None
         
+        # Mapear símbolo
+        symbol = self._get_mapped_symbol(symbol)
+        
+        # Asegurar que el símbolo está seleccionado en Market Watch
+        symbol_info = mt5.symbol_info(symbol)
+        if symbol_info and not symbol_info.visible:
+            mt5.symbol_select(symbol, True)
+            
         tick = mt5.symbol_info_tick(symbol)
         if tick:
             return Tick(
@@ -266,6 +287,7 @@ class MT5Connector:
         """Obtiene información detallada de un símbolo"""
         if not self.ensure_connected():
             return None
+        symbol = self._get_mapped_symbol(symbol)
         return mt5.symbol_info(symbol)
 
 
@@ -287,6 +309,14 @@ class MT5Connector:
         if not self.ensure_connected() or not PANDAS_AVAILABLE:
             return None
         
+        # Mapear símbolo
+        symbol = self._get_mapped_symbol(symbol)
+        
+        # Asegurar seleccion visible
+        symbol_info = mt5.symbol_info(symbol)
+        if symbol_info and not symbol_info.visible:
+            mt5.symbol_select(symbol, True)
+            
         tf = self.TIMEFRAMES.get(timeframe.upper(), self.TIMEFRAMES["M15"])
         
         rates = mt5.copy_rates_from_pos(symbol, tf, 0, count)
@@ -294,6 +324,14 @@ class MT5Connector:
             df = pd.DataFrame(rates)
             df['time'] = pd.to_datetime(df['time'], unit='s')
             return df
+        
+        # Log failure reason
+        last_error = mt5.last_error()
+        logger.warning(f"No se pudieron obtener rates para {symbol} ({timeframe}). Error MT5: {last_error}")
+        
+        # Verificar si el símbolo existe en absoluto
+        if mt5.symbol_info(symbol) is None:
+            logger.error(f"El símbolo {symbol} no existe en la terminal. ¿Mapeo incorrecto?")
         
         return None
     
@@ -444,9 +482,16 @@ class MT5Connector:
                 error="No conectado a MT5"
             )
         
-        # Verificar modo demo
+        # Obtener información de la cuenta para el mapeo de símbolos
         account_info = mt5.account_info()
-        if self.demo_mode and account_info.trade_mode != 0:
+        company = account_info.company if account_info else ""
+        
+        # Normalizar símbolo según el broker
+        original_symbol = symbol
+        symbol = normalize_symbol(symbol, company)
+        
+        # Verificar modo demo
+        if self.demo_mode and account_info and account_info.trade_mode != 0:
             return OrderResult(
                 success=False,
                 ticket=0,
@@ -462,6 +507,11 @@ class MT5Connector:
         # Obtener información del símbolo
         symbol_info = mt5.symbol_info(symbol)
         if symbol_info is None:
+            # Re-intentar con símbolo original si no funcionó la normalización
+            symbol = original_symbol
+            symbol_info = mt5.symbol_info(symbol)
+            
+        if symbol_info is None:
             return OrderResult(
                 success=False,
                 ticket=0,
@@ -473,6 +523,27 @@ class MT5Connector:
                 tp=0,
                 error=f"Símbolo {symbol} no encontrado"
             )
+        
+        if not symbol_info.visible:
+            mt5.symbol_select(symbol, True)
+        
+        # --- VALIDACIÓN DE VOLUMEN ---
+        # Asegurar que el volumen es válido para el broker
+        min_vol = symbol_info.volume_min
+        max_vol = symbol_info.volume_max
+        step_vol = symbol_info.volume_step
+        
+        if volume < min_vol:
+            logger.warning(f"Volumen {volume} menor al mínimo {min_vol} para {symbol}. Ajustando.")
+            volume = min_vol
+        elif volume > max_vol:
+            logger.warning(f"Volumen {volume} mayor al máximo {max_vol} para {symbol}. Ajustando.")
+            volume = max_vol
+        
+        # Ajustar por el paso (volume_step)
+        if step_vol > 0:
+            volume = round(round(volume / step_vol) * step_vol, 2)
+        # -----------------------------
         
         if not symbol_info.visible:
             mt5.symbol_select(symbol, True)

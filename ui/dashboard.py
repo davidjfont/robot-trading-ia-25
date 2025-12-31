@@ -641,8 +641,14 @@ def render_signal_card(signal):
     with st.container():
         col1, col2, col3, col4 = st.columns([2, 1.5, 1, 1.5])
         
+        # Sanitize metrics
+        score = signal.get("score")
+        if score is None: score = 0.0
+        
+        strength = signal.get("strength")
+        if strength is None: strength = 0.0
+        
         # Calculate Trend/Arrows first
-        score = signal.get("score", 0)
         if score > 0.6: arrows = "🟢🟢 Strong"
         elif score > 0.2: arrows = "🟢 Bias"
         elif score < -0.6: arrows = "🔴 Strong"
@@ -661,19 +667,54 @@ def render_signal_card(signal):
                 </div>
             ''', unsafe_allow_html=True)
         with col3:
-            strength = signal.get("strength", 0) * 100
-            st.markdown(f'<div style="width: 100%;"><div class="metric-label" style="font-size:0.6rem">{strength:.0f}% STR</div></div>', unsafe_allow_html=True)
-            st.progress(signal.get("strength", 0))
+            strength_val = strength * 100
+            st.markdown(f'<div style="width: 100%;"><div class="metric-label" style="font-size:0.6rem">{strength_val:.0f}% STR</div></div>', unsafe_allow_html=True)
+            st.progress(min(max(strength, 0.0), 1.0))
         with col4:
-            st.markdown(f'<div class="metric-label">Confidence</div><div style="font-weight:600; color:var(--text-dark)">{signal.get("score", 0):.3f}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-label">Confidence</div><div style="font-weight:600; color:var(--text-dark)">{score:.3f}</div>', unsafe_allow_html=True)
             
-            # Show reasoning if available (moved from below)
-            if "reasoning" in signal:
-                with st.expander("📝", expanded=False):
-                    st.write(signal["reasoning"])
-            elif "extra_data" in signal and signal["extra_data"]:
-                 with st.expander("📝", expanded=False):
-                    st.json(signal["extra_data"])
+            # Expander for professional details
+            with st.expander("🔍 Detalles de Hipótesis", expanded=False):
+                # 1. Show Hypothesis
+                if "reasoning" in signal:
+                    st.info(f"💡 {signal['reasoning']}")
+                else:
+                    st.info("💡 Esperando configuración óptima de indicadores técnicos y sentimiento.")
+                
+                # 2. Show Agent Votes (Step 3: Análisis)
+                votes = signal.get("extra_data", {}).get("votes", [])
+                if votes:
+                    st.write("**Votos de Agentes (Análisis Multicapa):**")
+                    vote_data = []
+                    for v in votes:
+                        vote_data.append({
+                            "Agente": v['agent'],
+                            "Opinión": v['vote'],
+                            "Confianza": f"{v['confidence']:.2f}",
+                            "Razón": v['reason']
+                        })
+                    st.table(pd.DataFrame(vote_data))
+                
+                # 3. Micro-indicators display
+                st.write("**Parámetros Analizados:**")
+                meta = signal.get("extra_data", {}).get("signal", {}).get("metadata", {})
+                tech_details = meta.get("technical_details", [])
+                
+                if tech_details:
+                    cols = st.columns(len(tech_details))
+                    for i, t in enumerate(tech_details):
+                        with cols[i]:
+                            st.caption(f"{t['indicator']}")
+                            st.markdown(f"**{t['signal']}** ({t['value']})")
+
+                # 4. Validity Window (Step 4: Decisión)
+                st.markdown("""
+                ---
+                <div style="font-size: 0.8rem; color: #666; display: flex; justify-content: space-between;">
+                    <span>⏱️ Ventana de Validez: 15 min (M15)</span>
+                    <span>✅ Umbral IA: |Score| > 0.4</span>
+                </div>
+                """, unsafe_allow_html=True)
 
 
 
@@ -1481,7 +1522,7 @@ def render_sidebar():
     
     st.sidebar.subheader("🔄 Actualización")
     auto_refresh = st.sidebar.toggle("Auto-actualización", value=user_config.get('auto_refresh', True))
-    refresh_interval = st.sidebar.slider("Intervalo (seg)", 1, 60, user_config.get('refresh_interval', 5))
+    refresh_interval = st.sidebar.slider("Intervalo (seg)", 1, 60, user_config.get('refresh_interval', 20))
     
     if auto_refresh != user_config.get('auto_refresh') or refresh_interval != user_config.get('refresh_interval'):
         update_config(auto_refresh=auto_refresh, refresh_interval=refresh_interval)
@@ -1737,7 +1778,7 @@ def main():
     # Manejo de auto-refresh
     if st.session_state.get('auto_refresh', False):
         import time
-        time.sleep(st.session_state.get('refresh_interval', 5))
+        time.sleep(st.session_state.get('refresh_interval', 20))
         st.rerun()
 
 

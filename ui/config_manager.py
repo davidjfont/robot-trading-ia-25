@@ -20,7 +20,7 @@ DEFAULT_CONFIG = {
     "max_risk_percent": 2,
     "max_positions": 3,
     "auto_refresh": True,
-    "refresh_interval": 5,
+    "refresh_interval": 20,
     "bot_running": False,
     "trading_mode": "normal",
     "scalping": {

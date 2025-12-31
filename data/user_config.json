@@ -2,10 +2,7 @@
   "symbols": [
     "EURUSD",
     "GOLD",
-    "BRENT",
-    "US500",
-    "GER40",
-    "ESP35"
+    "GER40"
   ],
   "all_available_symbols": [
     "EURUSD",
@@ -16,20 +13,20 @@
     "GOLD",
     "SILVER",
     "BRENT",
-    "WTI",
-    "NATGAS",
-    "US500",
-    "USTEC",
-    "US30",
-    "GER40",
-    "UK100",
-    "ESP35"
+    "#WTI.US",
+    "NGAS",
+    "[SP500]",
+    "US100",
+    "[DJI30]",
+    "GERMANY40",
+    "[FTSE100]",
+    "[IBEX35]"
   ],
   "timeframe": "M15",
   "max_risk_percent": 1,
-  "max_positions": 10,
+  "max_positions": 5,
   "auto_refresh": true,
-  "refresh_interval": 30,
+  "refresh_interval": 20,
   "bot_running": true,
   "trading_mode": "normal",
   "scalping": {
@@ -39,5 +36,5 @@
     "take_profit_pips": 6,
     "max_trade_duration_seconds": 120
   },
-  "last_updated": "2025-12-31T02:11:25.951839"
+  "last_updated": "2025-12-31T03:11:01.647527"
 }

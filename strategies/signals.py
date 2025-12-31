@@ -135,8 +135,11 @@ class SignalGenerator:
             combined_score=round(combined_score, 3),
             metadata={
                 "technical_signal": technical_data.get("combined_signal"),
+                "technical_details": technical_data.get("signals", []),
                 "sentiment": sentiment_data.get("sentiment"),
-                "news_count": news_data.get("news_count", 0)
+                "sentiment_details": sentiment_data,
+                "news_count": news_data.get("news_count", 0),
+                "news_details": news_data
             }
         )
         

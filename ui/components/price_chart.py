@@ -94,7 +94,7 @@ def render_price_chart(symbol: str = "EURUSD", timeframe: str = "M15",
         show_indicators = st.multiselect(
             "Indicadores",
             ["EMA 20", "EMA 50", "EMA 200", "RSI", "MACD", "Bollinger"],
-            default=["EMA 20", "EMA 50"],
+            default=["EMA 20", "EMA 50", "RSI"],
             key="chart_ind_selector"
         )
 
@@ -103,9 +103,10 @@ def render_price_chart(symbol: str = "EURUSD", timeframe: str = "M15",
     df = get_ohlc_data(chart_symbol, chart_timeframe, num_candles)
     
     if df is None or df.empty:
-        st.warning("No se pudieron obtener datos del mercado")
+        st.error(f"⚠️ No se pudieron obtener datos del mercado para {chart_symbol}")
+        st.info("Mostrando datos de simulación como referencia.")
         # Mostrar datos de ejemplo
-        df = generate_sample_data(num_candles)
+        df = generate_sample_data(num_candles, chart_symbol)
     
     # Calcular indicadores
     df = calculate_indicators(df, show_indicators)
@@ -170,19 +171,34 @@ def get_ohlc_data(symbol: str, timeframe: str, num_candles: int) -> Optional[pd.
         return None
 
 
-def generate_sample_data(num_candles: int) -> pd.DataFrame:
-    """Genera datos de ejemplo para demostración"""
+def generate_sample_data(num_candles: int, symbol: str = "EURUSD") -> pd.DataFrame:
+    """Genera datos de ejemplo para demostración con precios realistas según el símbolo"""
     np.random.seed(42)
     
     dates = pd.date_range(end=datetime.now(), periods=num_candles, freq='15min')
     
-    # Generar precios simulados
-    base_price = 1.0850
-    returns = np.random.randn(num_candles) * 0.001
+    # Determinar precio base realista
+    symbol_upper = symbol.upper()
+    if any(idx in symbol_upper for idx in ["GER", "DAX"]):
+        base_price = 18500.0
+    elif any(idx in symbol_upper for idx in ["SP500", "US500"]):
+        base_price = 5500.0
+    elif any(idx in symbol_upper for idx in ["NAS", "USTEC", "US100"]):
+        base_price = 19000.0
+    elif any(idx in symbol_upper for idx in ["DJI", "US30"]):
+        base_price = 39000.0
+    elif "GOLD" in symbol_upper:
+        base_price = 2350.0
+    elif any(idx in symbol_upper for idx in ["BTC", "ETH"]):
+        base_price = 65000.0
+    else:
+        base_price = 1.0850
+    
+    returns = np.random.randn(num_candles) * (base_price * 0.001)
     close = base_price + np.cumsum(returns)
     
-    high = close + np.abs(np.random.randn(num_candles) * 0.0005)
-    low = close - np.abs(np.random.randn(num_candles) * 0.0005)
+    high = close + np.abs(np.random.randn(num_candles) * (base_price * 0.0005))
+    low = close - np.abs(np.random.randn(num_candles) * (base_price * 0.0005))
     
     # Asegurar que open esté entre high y low
     open_prices = low + np.random.rand(num_candles) * (high - low)

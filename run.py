@@ -411,6 +411,26 @@ class TradingOrchestrator:
             # READY: Combiner
             decision = self.combiner.make_decision(symbol, tech_result, sent_result, news_result)
             
+            # Persistir señal en la base de datos (incluso si es HOLD) para visualización en Dashboard
+            try:
+                # Combinar datos de la señal interna y los votos del combinador
+                persistence_data = {
+                    "symbol": decision.symbol,
+                    "type": decision.action,
+                    "strength": decision.confidence,
+                    "technical_score": decision.signal.technical_score if decision.signal else 0,
+                    "sentiment_score": decision.signal.sentiment_score if decision.signal else 0,
+                    "news_score": decision.signal.news_score if decision.signal else 0,
+                    "combined_score": decision.signal.combined_score if decision.signal else 0,
+                    "metadata": {
+                        **decision.to_dict(),
+                        "reasoning": f"Hipótesis de probabilidad {decision.action} con confianza {decision.confidence:.2f}"
+                    }
+                }
+                self.storage.save_signal(persistence_data)
+            except Exception as e:
+                logger.error(f"Error guardando señal para {symbol}: {e}")
+            
             # EXECUTE Transition Check
             if decision.action in ["BUY", "SELL"] and decision.confidence > 0.5:
                 # EXECUTE: Risk Check (Context Kill Switch + Core Position)

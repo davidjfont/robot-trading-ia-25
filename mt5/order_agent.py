@@ -98,9 +98,10 @@ class OrderAgent(BaseAgent):
             
             # Registrar en base de datos
             if result.success:
+                symbol_to_save = result.symbol
                 self.storage.save_trade({
                     "ticket": result.ticket,
-                    "symbol": symbol,
+                    "symbol": symbol_to_save,
                     "type": order_type.upper(),
                     "volume": volume,
                     "open_price": result.price,
@@ -111,7 +112,7 @@ class OrderAgent(BaseAgent):
                     "signal_id": signal_id
                 })
                 
-                logger.info(f"Orden ejecutada: {order_type} {volume} {symbol} @ {result.price}")
+                logger.info(f"Orden ejecutada: {order_type} {volume} {symbol_to_save} @ {result.price}")
             else:
                 logger.warning(f"Orden fallida: {result.error}")
             
