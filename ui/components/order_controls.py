@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from mt5.connector import MT5Connector, Position
 from mt5.order_agent import OrderAgent
+from core.symbols import get_all_symbols
 
 
 def render_order_panel():
@@ -39,7 +40,7 @@ def render_new_order_form():
     with col1:
         symbol = st.selectbox(
             "Símbolo",
-            ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCHF"],
+            get_all_symbols(),
             key="order_symbol"
         )
         

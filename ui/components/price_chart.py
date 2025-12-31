@@ -118,8 +118,18 @@ def render_price_chart(symbol: str = "EURUSD", timeframe: str = "M15",
     
     # Análisis dinámico si no se proporciona uno fijo
     if llm_analysis is None:
-        with st.spinner(f"Analizando {chart_symbol}..."):
-            llm_analysis = get_current_llm_analysis(chart_symbol, df)
+        try:
+            with st.spinner(f"Analizando {chart_symbol}..."):
+                # Reducimos el tiempo de espera para el análisis visual interactivo
+                llm_analysis = get_current_llm_analysis(chart_symbol, df)
+        except Exception as e:
+            logger.warning(f"Error en análisis dinámico: {e}")
+            llm_analysis = {
+                'direction': 'HOLD',
+                'confidence': 0.0,
+                'reasoning': 'Análisis no disponible (Timeout/Error)',
+                'factors': {'Técnico': 0, 'Sentimiento': 0, 'Fundamental': 0}
+            }
     
     # Panel de análisis LLM
     if llm_analysis:
@@ -426,12 +436,39 @@ def get_current_llm_analysis(symbol: str, df: pd.DataFrame) -> Optional[Dict]:
         sentiment_agent = SentimentAgent()
         storage = get_storage()
         
-        # Obtener noticias recientes procesadas
-        recent_news = storage.get_recent_news(hours=48, processed=True)
-        news_texts = [n.title for n in recent_news]
+        # Obtener noticias recientes procesadas (limitamos para velocidad)
+        recent_news = storage.get_recent_news(hours=48, processed=True, limit=20)
         
-        if news_texts:
-            sent_result = sentiment_agent.analyze_for_symbol(news_texts, symbol)
+        # Filtrar noticias relevantes al símbolo actual para evitar ruido
+        base_currency = symbol[:3].upper()
+        quote_currency = symbol[3:6].upper() if len(symbol) >= 6 else ""
+        
+        relevant_news_items = []
+        for n in recent_news:
+            title_upper = n.title.upper()
+            if base_currency in title_upper or quote_currency in title_upper or symbol.upper() in title_upper:
+                relevant_news_items.append(n)
+        
+        if relevant_news_items:
+            # OPTIMIZACION: Si las noticias ya tienen score, los promediamos directamente
+            scores = [n.sentiment_score for n in relevant_news_items if n.sentiment_score is not None]
+            
+            if scores:
+                sent_score = sum(scores) / len(scores)
+                sent_sig = "bullish" if sent_score > 0.2 else "bearish" if sent_score < -0.2 else "neutral"
+                relevant_count = len(scores)
+                
+                sent_result = {
+                    "sentiment": sent_sig,
+                    "score": sent_score,
+                    "confidence": min(relevant_count / 5, 1.0),
+                    "relevant_news": relevant_count
+                }
+                logger.debug(f"Análisis para {symbol} basado en {relevant_count} noticias pre-procesadas. Score: {sent_score:.2f}")
+            else:
+                # Si por alguna razón no tienen score, recurrimos al agente (que usará LLM)
+                news_texts = [n.title for n in relevant_news_items]
+                sent_result = sentiment_agent.analyze_for_symbol(news_texts, symbol)
         else:
             sent_result = {"sentiment": "neutral", "score": 0.0, "confidence": 0.0, "relevant_news": 0}
             

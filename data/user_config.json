@@ -1,11 +1,33 @@
 {
   "symbols": [
     "EURUSD",
-    "GOLD"
+    "GOLD",
+    "BRENT",
+    "US500",
+    "GER40",
+    "ESP35"
   ],
-  "timeframe": "M30",
-  "max_risk_percent": 3,
-  "max_positions": 4,
+  "all_available_symbols": [
+    "EURUSD",
+    "GBPUSD",
+    "USDJPY",
+    "AUDUSD",
+    "USDCAD",
+    "GOLD",
+    "SILVER",
+    "BRENT",
+    "WTI",
+    "NATGAS",
+    "US500",
+    "USTEC",
+    "US30",
+    "GER40",
+    "UK100",
+    "ESP35"
+  ],
+  "timeframe": "M15",
+  "max_risk_percent": 1,
+  "max_positions": 10,
   "auto_refresh": true,
   "refresh_interval": 30,
   "bot_running": true,
@@ -17,5 +39,5 @@
     "take_profit_pips": 6,
     "max_trade_duration_seconds": 120
   },
-  "last_updated": "2025-12-31T00:10:48.334441"
+  "last_updated": "2025-12-31T02:11:25.951839"
 }

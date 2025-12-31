@@ -91,16 +91,18 @@ class LLMProvider:
         prompt: str, 
         system_prompt: Optional[str] = None,
         temperature: Optional[float] = None,
-        max_tokens: Optional[int] = None
+        max_tokens: Optional[int] = None,
+        timeout: int = 10
     ) -> LLMResponse:
         """
-        Genera una respuesta del modelo LLM
+        Genera una respuesta del modelo LLM con un timeout
         
         Args:
             prompt: El prompt del usuario
             system_prompt: Instrucciones del sistema (opcional)
             temperature: Control de creatividad 0-1 (opcional)
             max_tokens: Límite de tokens en respuesta (opcional)
+            timeout: Tiempo máximo de espera en segundos (defecto: 10s)
         
         Returns:
             LLMResponse con el contenido generado
@@ -114,32 +116,35 @@ class LLMProvider:
                 error="Ollama no disponible"
             )
         
+        import concurrent.futures
+        
+        def _generate():
+            try:
+                messages = []
+                if system_prompt:
+                    messages.append({"role": "system", "content": system_prompt})
+                messages.append({"role": "user", "content": prompt})
+                
+                return self.client.chat(
+                    model=self.model,
+                    messages=messages,
+                    options={
+                        "temperature": temperature or self.temperature,
+                        "num_predict": max_tokens or self.max_tokens
+                    }
+                )
+            except Exception as e:
+                logger.error(f"Error interno en Ollama: {e}")
+                return None
+
         try:
-            messages = []
-            
-            # Agregar system prompt si existe
-            if system_prompt:
-                messages.append({
-                    "role": "system",
-                    "content": system_prompt
-                })
-            
-            # Agregar prompt del usuario
-            messages.append({
-                "role": "user", 
-                "content": prompt
-            })
-            
-            # Generar respuesta
-            response = self.client.chat(
-                model=self.model,
-                messages=messages,
-                options={
-                    "temperature": temperature or self.temperature,
-                    "num_predict": max_tokens or self.max_tokens
-                }
-            )
-            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_generate)
+                response = future.result(timeout=timeout)
+                
+            if response is None:
+                raise Exception("Ollama retornó una respuesta vacía o error")
+                
             content = response.get("message", {}).get("content", "")
             tokens = response.get("eval_count", 0) + response.get("prompt_eval_count", 0)
             
@@ -152,6 +157,15 @@ class LLMProvider:
                 success=True
             )
             
+        except concurrent.futures.TimeoutError:
+            logger.warning(f"Timeout de {timeout}s alcanzado esperando al LLM")
+            return LLMResponse(
+                content="",
+                model=self.model,
+                tokens_used=0,
+                success=False,
+                error=f"Timeout superado ({timeout}s)"
+            )
         except Exception as e:
             logger.error(f"Error generando respuesta LLM: {e}")
             return LLMResponse(

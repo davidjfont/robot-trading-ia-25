@@ -229,18 +229,19 @@ class Storage:
         
         return saved
     
-    def get_recent_news(self, hours: int = 24, processed: Optional[bool] = None) -> List[ScrapedNews]:
+    def get_recent_news(self, hours: int = 24, processed: Optional[bool] = None, limit: Optional[int] = None) -> List[ScrapedNews]:
         """
         Obtiene noticias recientes
         
         Args:
             hours: Horas hacia atrás
             processed: Filtrar por procesado (None = todos)
+            limit: Límite de resultados
         """
         session = self.get_session()
         
         try:
-            cutoff = datetime.now() - timedelta(hours=hours)
+            cutoff = datetime.utcnow() - timedelta(hours=hours)
             query = session.query(ScrapedNews).filter(
                 ScrapedNews.scraped_at >= cutoff
             )
@@ -248,7 +249,12 @@ class Storage:
             if processed is not None:
                 query = query.filter(ScrapedNews.processed == processed)
             
-            return query.order_by(ScrapedNews.scraped_at.desc()).all()
+            query = query.order_by(ScrapedNews.scraped_at.desc())
+            
+            if limit:
+                query = query.limit(limit)
+                
+            return query.all()
             
         finally:
             session.close()
@@ -949,12 +955,26 @@ _storage_instance: Optional[Storage] = None
 def get_storage() -> Storage:
     """Obtiene instancia singleton del Storage"""
     global _storage_instance
+    
     if _storage_instance is None:
         _storage_instance = Storage()
     
-    # Verificación de seguridad para evitar AttributeErrors por cache
+    # Verificación de seguridad para evitar AttributeErrors o TypeErrors por cache
+    # 1. Verificar métodos nuevos
     if not hasattr(_storage_instance, 'get_all_trade_results'):
-        logger.warning("Singleton de Storage desactualizado. Forzando re-instanciación.")
+        logger.warning("Singleton de Storage desactualizado (missing analytics). Forzando re-instanciación.")
+        _storage_instance = Storage()
+        return _storage_instance
+
+    # 2. Verificar parámetros nuevos (como 'limit' en get_recent_news)
+    try:
+        import inspect
+        sig = inspect.signature(_storage_instance.get_recent_news)
+        if 'limit' not in sig.parameters:
+            logger.warning("Singleton de Storage desactualizado (missing 'limit' parameter). Forzando re-instanciación.")
+            _storage_instance = Storage()
+    except Exception:
+        # Si falla la inspección, por seguridad re-instanciamos
         _storage_instance = Storage()
         
     return _storage_instance

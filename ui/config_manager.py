@@ -6,6 +6,7 @@ import os
 import json
 from datetime import datetime
 from loguru import logger
+from core.symbols import get_all_symbols
 
 # Directorio base
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -13,7 +14,8 @@ CONFIG_FILE = os.path.join(BASE_DIR, 'data', 'user_config.json')
 
 # Configuración por defecto
 DEFAULT_CONFIG = {
-    "symbols": ["EURUSD", "GBPUSD"],
+    "symbols": get_all_symbols()[:5], # Default selection: first 5 symbols
+    "all_available_symbols": get_all_symbols(), # Full list for reference
     "timeframe": "M15",
     "max_risk_percent": 2,
     "max_positions": 3,

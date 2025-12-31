@@ -15,6 +15,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from backtester.engine import BacktestEngine
+from core.symbols import get_all_symbols
 
 
 def render_backtest_page():
@@ -50,7 +51,7 @@ def render_backtest_config():
         # Símbolo y timeframe
         symbol = st.selectbox(
             "Símbolo",
-            ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD"],
+            get_all_symbols(),
             key="bt_symbol"
         )
         

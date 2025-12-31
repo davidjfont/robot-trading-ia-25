@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
     from mt5.connector import MT5Connector
+    from core.symbols import get_all_symbols
     MT5_AVAILABLE = True
 except:
     MT5_AVAILABLE = False
@@ -65,7 +66,7 @@ class PriceService:
         update_interval: float = 15.0,
         cache_size: int = 500
     ):
-        self.symbols = symbols or ["EURUSD", "GBPUSD", "USDJPY"]
+        self.symbols = symbols or get_all_symbols()
         self.update_interval = update_interval
         self.cache_size = cache_size
         

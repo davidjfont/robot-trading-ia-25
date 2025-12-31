@@ -26,6 +26,7 @@ from ui.components.risk_monitor import render_risk_monitor
 from ui.components.reports import render_reports_panel
 from ui.pages.backtest import render_backtest_page
 from ui.config_manager import load_config, save_config, reset_config, update_config
+from core.symbols import get_all_symbols
 
 # Configuración de página
 st.set_page_config(
@@ -447,7 +448,7 @@ def get_cached_logs(_storage, limit=25):
 
 @st.cache_data(ttl=60)
 def get_cached_news(_storage):
-    return _storage.get_recent_news(hours=24)
+    return _storage.get_recent_news(hours=24, limit=40)
 
 @st.cache_data(ttl=10)
 def get_cached_signals(_storage):
@@ -1430,8 +1431,8 @@ def render_sidebar():
     st.sidebar.subheader("📊 Símbolos")
     symbols = st.sidebar.multiselect(
         "Seleccionar pares",
-        ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCHF", "GOLD", "BTCUSD"],
-        default=user_config.get('symbols', ["EURUSD", "GBPUSD"])
+        get_all_symbols(),
+        default=user_config.get('symbols', get_all_symbols()[:2])
     )
     
     # Active Symbol for Charts (Single Select)
