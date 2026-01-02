@@ -201,16 +201,18 @@ def render_veto_log():
         st.caption("No hay conexión con el storage")
         return
         
-    logs = storage.fetch_agent_logs(limit=20)
-    vetos = [l for l in logs if "SENTIMENT_VETO" in l.action]
+    logs = storage.fetch_system_logs(limit=50) # fetch_system_logs es el método real
+    vetos = [l for l in logs if l.action and "SENTIMENT_VETO" in l.action]
     
     if not vetos:
         st.caption("✅ No se han registrado vetos recientemente.")
         return
         
     for v in vetos[:3]: # Mostrar últimos 3
+        # Formatear fecha correctamente
+        time_str = v.created_at.strftime("%H:%M:%S") if v.created_at else "??"
         st.markdown(f"- **{v.action.replace('SENTIMENT_VETO ', '')}**: {v.result} "
-                   f"<small style='color:#888'>({v.created_at[-8:]})</small>", 
+                   f"<small style='color:#888'>({time_str})</small>", 
                    unsafe_allow_html=True)
 
 
