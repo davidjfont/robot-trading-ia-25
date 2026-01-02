@@ -1,7 +1,6 @@
 {
   "symbols": [
     "GOLD",
-    "GER40",
     "EURUSD"
   ],
   "all_available_symbols": [
@@ -36,5 +35,5 @@
     "take_profit_pips": 6,
     "max_trade_duration_seconds": 120
   },
-  "last_updated": "2026-01-02T08:34:56.678681"
+  "last_updated": "2026-01-02T19:20:47.448254"
 }

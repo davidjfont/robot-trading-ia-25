@@ -290,6 +290,31 @@ class MT5Connector:
         symbol = self._get_mapped_symbol(symbol)
         return mt5.symbol_info(symbol)
 
+    def get_order_margin(self, symbol: str, order_type: str, volume: float, price: float = None) -> float:
+        """Calcula el margen requerido para una orden"""
+        if not self.ensure_connected():
+            return 0.0
+        
+        # Mapear símbolo
+        symbol = self._get_mapped_symbol(symbol)
+        
+        if price is None:
+            tick = self.get_tick(symbol)
+            if not tick:
+                return 0.0
+            price = tick.ask if order_type.upper() == "BUY" else tick.bid
+            
+        mt5_type = mt5.ORDER_TYPE_BUY if order_type.upper() == "BUY" else mt5.ORDER_TYPE_SELL
+        
+        # order_calc_margin retorna el margen en la moneda de la cuenta (flotante)
+        margin = mt5.order_calc_margin(mt5_type, symbol, volume, price)
+        
+        if margin is None:
+            logger.warning(f"No se pudo calcular margen para {symbol} {volume} lotes. Error MT5: {mt5.last_error()}")
+            return 0.0
+            
+        return float(margin)
+
 
     
     def get_rates(

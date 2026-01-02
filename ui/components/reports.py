@@ -46,7 +46,7 @@ def render_metrics_report():
     # Selector de período
     period = st.selectbox(
         "Período",
-        ["Última semana", "Último mes", "Últimos 3 meses", "Todo el historial"],
+        ["Hoy", "Ayer", "Última semana", "Último mes", "Últimos 3 meses", "Todo el historial"],
         key="metrics_period"
     )
     
@@ -353,7 +353,14 @@ def get_trades_for_period(period: str) -> List[TradeResult]:
         return []
     
     now = datetime.now()
-    if period == "Última semana":
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    
+    if period == "Hoy":
+        return [t for t in all_trades if t.close_time >= today_start]
+    elif period == "Ayer":
+        yesterday_start = today_start - timedelta(days=1)
+        return [t for t in all_trades if yesterday_start <= t.close_time < today_start]
+    elif period == "Última semana":
         cutoff = now - timedelta(days=7)
     elif period == "Último mes":
         cutoff = now - timedelta(days=30)

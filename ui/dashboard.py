@@ -806,8 +806,25 @@ def render_positions():
                     remaining = max(0, session.duration_seconds - elapsed)
                     progress = min(elapsed / session.duration_seconds, 1.0)
                     
-                    st.caption(f"🐍 Snake Active: {remaining:.0f}s left")
-                    st.progress(progress)
+                    c1, c2 = st.columns([3, 1])
+                    with c1:
+                        st.caption(f"🐍 Snake Active: {int(remaining)}s left")
+                        st.progress(progress)
+                    with c2:
+                        # Botón para forzar reset o parada manual (Petición usuario)
+                        if st.button("⏹️", key=f"snake_reset_{ticket}", help="Detener control Snake y resetear botón", width='stretch'):
+                            if storage:
+                                storage.update_snake_session(session.id, "ABORTED", "NEUTRAL", 0, "Detenido manualmente desde UI")
+                                st.rerun()
+                    
+                    # Auto-reset visual: Si el tiempo acabó y sigue en DB como activo, damos opción de reset
+                    if remaining <= 0:
+                        st.warning("⚠️ Tiempo agotado. Esperando confirmación del bot...")
+                        if st.button("🔄 Forzar Reset Botón", key=f"force_reset_{ticket}"):
+                            if storage:
+                                storage.update_snake_session(session.id, "COMPLETED", "NEUTRAL", 0, "Forzado desde UI (Timeout)")
+                                st.rerun()
+
                 else:
                     c1, c2 = st.columns([2, 1])
                     with c1:

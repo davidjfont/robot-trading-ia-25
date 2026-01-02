@@ -30,7 +30,7 @@ class ContextAgent:
         }
         self.min_atr_threshold = self.config.get('min_atr_threshold', 0.0005)
         
-    def analyze(self, symbol: str, rates_m5: list, rates_m15: list = None) -> Dict[str, Any]:
+    def analyze(self, symbol: str, rates_m5: list, rates_m15: list = None, current_spread: float = 0.0) -> Dict[str, Any]:
         """
         Analiza el contexto actual para decidir si tradear
         
@@ -40,7 +40,8 @@ class ContextAgent:
                 'market_state': str,  # 'trending', 'ranging', 'chaotic'
                 'session': str,
                 'atr': float,
-                'reasons': list
+                'reasons': list,
+                'is_toxic': bool
             }
         """
         reasons = []
@@ -54,8 +55,15 @@ class ContextAgent:
         # 3. Clasificar estado del mercado
         market_state, state_confidence = self._classify_market_state(rates_m5)
         
-        # 4. Evaluar si se puede tradear
+        # 4. Verificar contexto tóxico (Expert rule)
+        is_toxic = self.is_toxic(symbol, current_spread, rates_m5)
+        
+        # 5. Evaluar si se puede tradear
         can_trade = True
+        
+        if is_toxic:
+            can_trade = False
+            reasons.append("Contexto tóxico detectado (Spread/ATR o Estructura)")
         
         # Regla 1: ATR mínimo
         if atr < self.min_atr_threshold:
@@ -83,12 +91,43 @@ class ContextAgent:
             'state_confidence': state_confidence,
             'session': session,
             'atr': atr,
+            'is_toxic': is_toxic,
             'reasons': reasons if not can_trade else ["Contexto favorable para scalping"]
         }
         
-        logger.debug(f"[ContextAgent] {symbol}: {market_state} | ATR:{atr:.5f} | Session:{session} | Trade:{can_trade}")
+        logger.debug(f"[ContextAgent] {symbol}: {market_state} | ATR:{atr:.5f} | Session:{session} | Toxic:{is_toxic} | Trade:{can_trade}")
         
         return result
+
+    def is_toxic(self, symbol: str, current_spread: float, rates_m5: list) -> bool:
+        """
+        Determina si el contexto es tóxico para el scalping.
+        Basado en feedback experto: Spread/ATR, Volatilidad muerta o extrema, Chop Index.
+        """
+        if not rates_m5 or len(rates_m5) < 14:
+            return True
+            
+        atr = self._calculate_atr(rates_m5)
+        
+        # 1. Spread Relativo Alto: spread / ATR > 0.5 (el spread es media vela o más)
+        if atr > 0:
+            relative_spread = current_spread / atr
+            if relative_spread > 0.5:
+                logger.warning(f"[Context] Toxic: Spread Relativo Alto ({relative_spread:.2f} > 0.5)")
+                return True
+        
+        # 2. Volatilidad muerta
+        if atr < 0.0001: # 1 pip en FX o 10 puntos en GER40
+            logger.warning(f"[Context] Toxic: Volatilidad Muerta (ATR: {atr:.6f})")
+            return True
+
+        # 3. Estructura caótica/Chop (ADX bajo + Pendiente plana)
+        market_state, state_confidence = self._classify_market_state(rates_m5)
+        if market_state == "chaotic" and state_confidence > 0.7:
+             logger.warning(f"[Context] Toxic: Estructura Caótica Reconfirmada")
+             return True
+             
+        return False
     
     def _get_current_session(self) -> str:
         """Detecta la sesión de trading actual"""
@@ -108,12 +147,15 @@ class ContextAgent:
             return "off_hours"
     
     def _calculate_atr(self, rates: list, period: int = 14) -> float:
-        """Calcula ATR dinámico"""
-        if not rates or len(rates) < period + 1:
+        """Calcula ATR dinámico de forma robusta"""
+        if not rates or len(rates) < 2:
             return 0.0
         
         tr_values = []
-        for i in range(1, min(len(rates), period + 1)):
+        # Usar todos los datos disponibles hasta period o len(rates)
+        count = min(len(rates), period + 1)
+        
+        for i in range(len(rates) - count + 1, len(rates)):
             high = rates[i]['high']
             low = rates[i]['low']
             prev_close = rates[i-1]['close']

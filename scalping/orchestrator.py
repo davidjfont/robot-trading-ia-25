@@ -69,8 +69,17 @@ class ScalpingOrchestrator:
             'context_blocks': 0,
             'risk_blocks': 0,
             'technical_rejects': 0,
-            'snake_interventions': 0
+            'snake_interventions': 0,
+            'toxic_context_blocks': 0,
+            'pacing_blocks': 0
         }
+        
+        # Trade Pacing Control
+        self.last_trade_times = {} # symbol -> timestamp
+        self.hourly_trade_counts = {} # symbol -> {hour: count}
+        self.min_seconds_between_trades = scalp_config.get('min_seconds_between_trades', 300) # 5 min default
+        self.max_trades_per_hour = scalp_config.get('max_trades_per_hour', 3)
+        self.auto_maintain_positions = scalp_config.get('auto_maintain_positions', False) # Desactivado por defecto
         
         # Historial para detección de cierre
         self._last_pos_count = 0
@@ -101,6 +110,26 @@ class ScalpingOrchestrator:
                 try:
                     import json
                     user_config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data', 'user_config.json')
+                    
+                    # Revision de trades cerrados para el bandit
+                    elapsed = time.time() - cycle_start # Use current elapsed time for this check
+                    if elapsed >= 30: # Revision cada 30s aprox
+                        p_count = len(self.order_agent.get_open_positions())
+                        if p_count < self._last_pos_count:
+                            logger.info("📉 Detectado cierre de posición. Sincronizando...")
+                            recent_trades = self.storage.get_all_trade_results(limit=5)
+                            for trade in recent_trades:
+                                # Si el trade no ha sido procesado por el bandit
+                                if trade.ticket not in self._processed_tickets:
+                                    # Intentar recuperar qué preset se usó
+                                    preset = trade.comment.split('|')[-1] if '|' in trade.comment else "balanced"
+                                    self.learning_agent.register_trade_result(trade.__dict__, preset)
+                                    self._processed_tickets.add(trade.ticket)
+
+                            # Esto parece ser un análisis general, no ligado a un trade específico
+                            # self.learning_agent.analyze_trade(recent_trades[0].__dict__ if recent_trades else {})
+                        self._last_pos_count = p_count
+
                     if os.path.exists(user_config_path):
                         with open(user_config_path, 'r', encoding='utf-8') as f:
                             user_config = json.load(f)
@@ -122,27 +151,30 @@ class ScalpingOrchestrator:
                 # ═══════════════════════════════════════════════════════════
                 # AUTO-MAINTAIN: Asegurar al menos una posición por símbolo seleccionado
                 # ═══════════════════════════════════════════════════════════
-                positions = self.order_agent.get_open_positions()
-                symbols_with_positions = {p.get('symbol') for p in positions} if positions else set()
-                
-                # Combinar con trades que acabamos de abrir pero MT5 aún no reporta
-                pending_symbols = {t['symbol'] for t in self.execution_agent.active_scalp_trades.values()}
-                all_active_symbols = symbols_with_positions.union(pending_symbols)
-                
-                for symbol in self.symbols:
-                    if symbol not in all_active_symbols:
-                        logger.info(f"🤖 SCALPING AUTO-FIX: Forzando posición mínima en {symbol}")
-                        # Usar dirección técnica o aleatoria para la entrada forzada
-                        self._force_open_scalp(symbol)
+                if self.auto_maintain_positions:
+                    positions = self.order_agent.get_open_positions()
+                    symbols_with_positions = {p.get('symbol') for p in positions} if positions else set()
+                    
+                    # Combinar con trades que acabamos de abrir pero MT5 aún no reporta
+                    pending_symbols = {t['symbol'] for t in self.execution_agent.active_scalp_trades.values()}
+                    all_active_symbols = symbols_with_positions.union(pending_symbols)
+                    
+                    for symbol in self.symbols:
+                        if symbol not in all_active_symbols:
+                            logger.info(f"🤖 SCALPING AUTO-FIX: Forzando posición mínima en {symbol}")
+                            # Usar dirección técnica o aleatoria para la entrada forzada
+                            self._force_open_scalp(symbol)
+                else:
+                    logger.debug("🤖 AUTO-MAINTAIN desactivado por política de ruido.")
                 
                 # ═══════════════════════════════════════════════════════════
                 # SYNC: Detectar cierres y sincronizar historial
                 # ═══════════════════════════════════════════════════════════
-                num_positions = len(positions) if positions else 0
-                if num_positions < self._last_pos_count:
-                    logger.info("📉 SCALPING: Detectado cierre de posición. Sincronizando...")
-                    self._trigger_fast_sync()
-                self._last_pos_count = num_positions
+                # num_positions = len(positions) if positions else 0 # positions might not be defined here
+                # if num_positions < self._last_pos_count:
+                #     logger.info("📉 SCALPING: Detectado cierre de posición. Sincronizando...")
+                #     self._trigger_fast_sync()
+                # self._last_pos_count = num_positions
                 
                 # BG Sync cada 5 mins
                 now = time.time()
@@ -220,12 +252,31 @@ class ScalpingOrchestrator:
         rates_m5 = self._get_rates(symbol, "M5", 50)
         rates_m15 = self._get_rates(symbol, "M15", 50)
         
-        context = self.context_agent.analyze(symbol, rates_m5, rates_m15)
+        # Obtener spread actual para el filtro de contexto tóxico
+        tick = self.mt5.get_tick(symbol)
+        current_spread = (tick.ask - tick.bid) if tick else 0.0
+        
+        context = self.context_agent.analyze(symbol, rates_m5, rates_m15, current_spread=current_spread)
+        
+        # Pasar ATR actual al execution agent para sus cálculos de SL/TP
+        self.execution_agent.config['last_atr'] = context.get('atr', 0.0005)
         
         if not context['can_trade']:
-            self.session_stats['context_blocks'] += 1
-            logger.debug(f"[Scalp] {symbol}: Contexto NO favorable - {context['reasons']}")
+            if context.get('is_toxic'):
+                self.session_stats['toxic_context_blocks'] += 1
+                logger.warning(f"[Scalp] {symbol}: Contexto TÓXICO (Spread/Volatilidad) - Omitiendo.")
+            else:
+                self.session_stats['context_blocks'] += 1
+                logger.debug(f"[Scalp] {symbol}: Contexto NO favorable - {context['reasons']}")
+            
             self._log_decision(symbol, "CONTEXT_BLOCK", context['reasons'])
+            return
+        
+        # ═══════════════════════════════════════════════════════════
+        # PACING: Control de frecuencia por símbolo
+        # ═══════════════════════════════════════════════════════════
+        if not self._check_pacing(symbol):
+            self.session_stats['pacing_blocks'] += 1
             return
         
         # ═══════════════════════════════════════════════════════════
@@ -245,6 +296,23 @@ class ScalpingOrchestrator:
         entry_type = micro['entry_type']
         
         logger.info(f"[Scalp] {symbol}: 📊 Señal {signal} detectada (conf: {confidence:.0%})")
+        
+        # ═══════════════════════════════════════════════════════════
+        # PRESET SELECTION: Elegir política por símbolo (Fase 2)
+        # ═══════════════════════════════════════════════════════════
+        preset_name = self.learning_agent.bandit.select_preset(symbol, context)
+        preset_params = self.learning_agent.bandit.get_params(preset_name)
+        
+        # Aplicar multiplicadores del preset al ATR
+        k_sl = preset_params.get('k_sl', 1.5)
+        k_tp = preset_params.get('k_tp', 2.5)
+        
+        logger.info(f"[Scalp] {symbol}: Usando preset '{preset_name}' (K_SL:{k_sl}, K_TP:{k_tp})")
+        
+        # Inyectar en config temporal para execution_agent
+        self.execution_agent.config['current_k_sl'] = k_sl
+        self.execution_agent.config['current_k_tp'] = k_tp
+        self.execution_agent.config['current_preset'] = preset_name
         
         # ═══════════════════════════════════════════════════════════
         # CAPA 3: TÉCNICO - ¿Se confirma la señal?
@@ -286,6 +354,13 @@ class ScalpingOrchestrator:
         
         if result['success']:
             self.session_stats['trades_executed'] += 1
+            # Registrar tiempo del último trade para Pacing
+            self.last_trade_times[symbol] = time.time()
+            # Incrementar contador horario
+            current_hour = datetime.now().hour
+            if symbol not in self.hourly_trade_counts: self.hourly_trade_counts[symbol] = {}
+            self.hourly_trade_counts[symbol][current_hour] = self.hourly_trade_counts[symbol].get(current_hour, 0) + 1
+            
             logger.info(f"[Scalp] {symbol}: ✅ Trade ejecutado #{result['ticket']}")
             
             self._log_decision(symbol, "EXECUTED", f"#{result['ticket']} @ {result['entry_price']}")
@@ -381,6 +456,27 @@ class ScalpingOrchestrator:
         if analysis['recommendations']:
             for rec in analysis['recommendations']:
                 logger.info(f"[Scalp] 💡 Recomendación: {rec}")
+
+    def _check_pacing(self, symbol: str) -> bool:
+        """Verifica los límites de frecuencia de trading (Trade Pacing)"""
+        now = time.time()
+        
+        # 1. Cooldown entre trades
+        last_time = self.last_trade_times.get(symbol, 0)
+        elapsed = now - last_time
+        if elapsed < self.min_seconds_between_trades:
+            wait_needed = self.min_seconds_between_trades - elapsed
+            logger.debug(f"[Scalp] {symbol}: Pacing Cooldown ({int(wait_needed)}s restantes)")
+            return False
+            
+        # 2. Máximo trades por hora
+        current_hour = datetime.now().hour
+        counts = self.hourly_trade_counts.get(symbol, {}).get(current_hour, 0)
+        if counts >= self.max_trades_per_hour:
+             logger.warning(f"[Scalp] {symbol}: Límite horario de trades alcanzado ({counts}/{self.max_trades_per_hour})")
+             return False
+             
+        return True
 
     def _process_snake_sessions(self):
         """Procesa las sesiones de control temporal activas (Snake Mode)"""

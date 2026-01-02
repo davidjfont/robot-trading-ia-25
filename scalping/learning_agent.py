@@ -25,6 +25,10 @@ class LearningAgent:
         self.storage = storage
         self.config = config or {}
         
+        # Policy Bandit (Light Learning)
+        from .policy_bandit import PolicyBandit
+        self.bandit = PolicyBandit()
+        
         # Estadísticas por hora
         self.hourly_stats = {h: {'wins': 0, 'losses': 0, 'total_pnl': 0} for h in range(24)}
         
@@ -309,3 +313,18 @@ class LearningAgent:
         """Carga datos históricos de aprendizaje"""
         # TODO: Implementar carga desde base de datos
         pass
+
+    def register_trade_result(self, trade_data: Dict[str, Any], preset_used: str):
+        """Registra el resultado en el bandit"""
+        profit = trade_data.get('profit', 0)
+        sl_pips = trade_data.get('sl_pips', 1.0) # Evitar division por cero
+        
+        # R-Multiple aproximado (Profit / Riesgo inicial)
+        # En una fase más avanzada usaríamos el R exacto del risk agent
+        r_multiple = profit / (sl_pips * 10) if sl_pips > 0 else 0
+        
+        self.bandit.update_stats(
+            symbol=trade_data.get('symbol', 'UNK'),
+            preset_name=preset_used,
+            r_multiple=r_multiple
+        )
