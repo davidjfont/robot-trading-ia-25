@@ -491,12 +491,14 @@ def get_current_llm_analysis(symbol: str, df: pd.DataFrame) -> Optional[Dict]:
         # 3. Combinar resultados para la UI
         # Mapeo de scores a dirección
         tech_score = tech_result.get("combined_score", 0) if tech_result else 0
-        sent_score = sent_result.get("score", 0) if sent_result else 0
-        combined_score = (tech_score * 0.6) + (sent_score * 0.4)
+        combined_score = (tech_score * 0.5) + (sent_score * 0.5)
         
-        if combined_score > 0.2:
+        # Aumentamos umbral a 0.3 para sincronizar con TechnicalAgent y Combiner
+        threshold = 0.3
+        
+        if combined_score >= threshold:
             direction = "BUY"
-        elif combined_score < -0.2:
+        elif combined_score <= -threshold:
             direction = "SELL"
         else:
             direction = "HOLD"
@@ -523,7 +525,7 @@ def get_current_llm_analysis(symbol: str, df: pd.DataFrame) -> Optional[Dict]:
             'factors': {
                 'Técnico': tech_score,
                 'Sentimiento': sent_score,
-                'Fundamental': 0.15  # Placeholder para futuros datos macro
+                'Fundamental': 0.0  # Eliminado el +0.15 bias (Arafura 2026)
             }
         }
     except Exception as e:

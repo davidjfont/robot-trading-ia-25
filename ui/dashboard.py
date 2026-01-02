@@ -649,10 +649,11 @@ def render_signal_card(signal):
         if strength is None: strength = 0.0
         
         # Calculate Trend/Arrows first
-        if score > 0.6: arrows = "🟢🟢 Strong"
-        elif score > 0.2: arrows = "🟢 Bias"
-        elif score < -0.6: arrows = "🔴 Strong"
-        elif score < -0.2: arrows = "🔴🔴 Bias"
+        # Calculate Trend/Arrows (Arafura 2026 Fix)
+        if score >= 0.6: arrows = "🟢🟢 Strong"
+        elif score >= 0.3: arrows = "🟢 Bias"
+        elif score <= -0.6: arrows = "🔴🔴 Strong"
+        elif score <= -0.3: arrows = "🔴 Bias"
         else: arrows = "🟦 Neutral"
 
         with col1:
