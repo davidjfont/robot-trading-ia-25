@@ -156,8 +156,8 @@ class TechnicalAgent(BaseAgent):
                     ],
                     "combined_signal": result["signal"],
                     "combined_score": result["score"],
-                    "trend": result["trend"]
-
+                    "trend": result["trend"],
+                    "atr": self._calculate_atr(df, self.config["atr_period"])
                 }
             )
             
@@ -303,6 +303,26 @@ class TechnicalAgent(BaseAgent):
         except Exception as e:
             logger.debug(f"Error calculando MACD: {e}")
             return None
+
+    def _calculate_atr(self, df: pd.DataFrame, period: int = 14) -> float:
+        """Calcula el Average True Range (ATR) actual"""
+        try:
+            high = df["high"]
+            low = df["low"]
+            close = df["close"].shift(1)
+            
+            tr1 = high - low
+            tr2 = abs(high - close)
+            tr3 = abs(low - close)
+            
+            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+            atr = tr.rolling(window=period).mean()
+            
+            val = atr.iloc[-1]
+            return float(val) if not pd.isna(val) else 0.0
+        except Exception as e:
+            logger.error(f"Error calculando ATR: {e}")
+            return 0.0
     
     def _combine_signals(self, signals: List[TechnicalSignal]) -> Dict[str, Any]:
         """Combina múltiples señales técnicas"""

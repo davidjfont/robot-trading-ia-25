@@ -191,6 +191,15 @@ class MultiAgentCombiner:
                 logger.warning(f"🛡️ VETO DE SENTIMIENTO para {symbol}: Sentimiento {sent_v.vote} (conf: {sent_v.confidence:.2f}) se opone a Técnica {tech_v.vote}. Forzando HOLD.")
                 decision["action"] = "HOLD"
                 decision["reasons"] = [f"Veto de sentimiento: {sent_v.reason}"]
+                
+                # Registrar veto en storage para visibilidad en UI (Arafura 2026)
+                if self.storage:
+                    self.storage.save_agent_log(
+                        agent_name="Combiner",
+                        action=f"SENTIMENT_VETO {symbol}",
+                        result=f"Technical {tech_v.vote} overruled by Sentiment {sent_v.vote}",
+                        success=True
+                    )
         
         # Aplicar filtro de riesgo si está disponible
         if risk_result and not risk_result.get("approved", True):

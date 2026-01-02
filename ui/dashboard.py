@@ -675,6 +675,19 @@ def render_signal_card(signal):
             
             # Expander for professional details
             with st.expander("🔍 Detalles de Hipótesis", expanded=False):
+                # 0. Arafura 2026: Recommended Execution
+                risk_data = signal.get("extra_data", {}).get("risk_assessment", {})
+                if risk_data:
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        st.success(f"📦 Lote Sugerido: **{risk_data.get('recommended_volume', 0.01)}**")
+                    with c2:
+                        # Extraer SL/TP de los reasons si es que se calculó por ATR
+                        reasons = risk_data.get("reasons", [])
+                        atr_info = next((r for r in reasons if "ATR" in r), None)
+                        if atr_info:
+                            st.info(f"{atr_info}")
+                
                 # 1. Show Hypothesis
                 if "reasoning" in signal:
                     st.info(f"💡 {signal['reasoning']}")

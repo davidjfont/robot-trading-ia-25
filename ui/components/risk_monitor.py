@@ -71,9 +71,9 @@ def render_risk_monitor():
             icon="⚖️"
         )
     
-    # Semáforo de estado
+    # --- NUEVA SECCIÓN: PRESUPUESTO DE RIESGO (ARAFURA 2026) ---
     st.divider()
-    render_risk_status(daily_loss_percent, max_daily_loss, drawdown_percent, max_drawdown)
+    render_advanced_governance(daily_loss_percent, max_daily_loss)
     
     # Configuración de límites (desplegable)
     with st.expander("⚙️ Configurar Límites"):
@@ -154,6 +154,64 @@ def render_risk_status(daily_loss: float, daily_limit: float,
         st.error("⚠️ LÍMITE DE RIESGO ALCANZADO")
         if st.button("🚨 CERRAR TODAS LAS POSICIONES", type="primary", width='stretch'):
             st.warning("Cerrando todas las posiciones...")
+
+
+def render_advanced_governance(current_loss: float, daily_limit: float):
+    """Muestra métricas avanzadas de gobernanza Arafura 2026"""
+    
+    budget_remaining = max(0, daily_limit - current_loss)
+    budget_pct = (budget_remaining / daily_limit * 100) if daily_limit > 0 else 0
+    
+    c1, c2 = st.columns([2, 1])
+    
+    with c1:
+        st.markdown(f"#### 🛰️ Risk Budget Identity")
+        st.markdown(f"El presupuesto de seguridad está al **{budget_pct:.1f}%**. "
+                   f"Se permiten nuevas operaciones mientras el budget sea > 0% e individualmente respeten la regla del 1%.")
+        
+        # Log de Vetos
+        st.markdown("---")
+        st.markdown("##### 🛡️ Últimos Vetos de Sentimiento")
+        render_veto_log()
+        
+    with c2:
+        # Mini Gauge de Budget
+        import plotly.graph_objects as go
+        fig = go.Figure(go.Indicator(
+            mode = "gauge+number",
+            value = budget_pct,
+            title = {'text': "Budget %"},
+            gauge = {
+                'axis': {'range': [0, 100]},
+                'bar': {'color': "#00c853" if budget_pct > 20 else "#ff1744"},
+                'steps': [
+                    {'range': [0, 20], 'color': "rgba(255, 23, 68, 0.2)"},
+                    {'range': [20, 100], 'color': "rgba(0, 200, 83, 0.1)"}
+                ]
+            }
+        ))
+        fig.update_layout(height=180, margin=dict(l=20, r=20, t=40, b=20))
+        st.plotly_chart(fig, use_container_width=True)
+
+def render_veto_log():
+    """Muestra los últimos vetos registrados en la DB"""
+    from scraping.storage import get_storage
+    storage = get_storage()
+    if not storage:
+        st.caption("No hay conexión con el storage")
+        return
+        
+    logs = storage.fetch_agent_logs(limit=20)
+    vetos = [l for l in logs if "SENTIMENT_VETO" in l.action]
+    
+    if not vetos:
+        st.caption("✅ No se han registrado vetos recientemente.")
+        return
+        
+    for v in vetos[:3]: # Mostrar últimos 3
+        st.markdown(f"- **{v.action.replace('SENTIMENT_VETO ', '')}**: {v.result} "
+                   f"<small style='color:#888'>({v.created_at[-8:]})</small>", 
+                   unsafe_allow_html=True)
 
 
 def render_risk_config():

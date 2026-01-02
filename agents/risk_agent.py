@@ -333,6 +333,24 @@ class RiskAgent(BaseAgent):
             
             if adjusted_volume < proposed_volume:
                 reasons.append(f"📉 Volumen optimizado por riesgo: {proposed_volume} → {adjusted_volume}")
+                
+            # ═══════════════════════════════════════════════════════════
+            # CÁLCULO DE SL/TP ADAPTATIVO (ATR)
+            # ═══════════════════════════════════════════════════════════
+            technical_data = data.get("technical_data", {}) if isinstance(data, dict) else {}
+            atr = technical_data.get("atr", 0)
+            
+            if atr > 0:
+                # Convertir ATR a pips aproximados para la interfaz
+                # ATR suele estar en precio (0.00015). En pips (5 dígitos), 0.0001 = 1 pip
+                point = technical_data.get("point", 0.0001) # fallback
+                pips_in_atr = atr / (point * 10) if point > 0 else 0
+                
+                if pips_in_atr > 0:
+                    rec_sl = round(pips_in_atr * 1.5, 1) # SL = 1.5 * ATR
+                    rec_tp = round(pips_in_atr * 3.0, 1) # TP = 3.0 * ATR
+                    reasons.append(f"📏 Adaptativo (ATR): SL {rec_sl} / TP {rec_tp} pips")
+                    # Podríamos sobreescribir los valores si quisiéramos automatizarlo al 100%
         else:
             adjusted_volume = 0
         
