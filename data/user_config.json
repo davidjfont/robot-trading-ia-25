@@ -21,7 +21,7 @@
     "[FTSE100]",
     "[IBEX35]"
   ],
-  "timeframe": "H1",
+  "timeframe": "M5",
   "max_risk_percent": 1,
   "max_positions": 5,
   "auto_refresh": true,
@@ -35,5 +35,5 @@
     "take_profit_pips": 6,
     "max_trade_duration_seconds": 120
   },
-  "last_updated": "2026-01-02T19:20:47.448254"
+  "last_updated": "2026-01-02T19:42:57.027291"
 }

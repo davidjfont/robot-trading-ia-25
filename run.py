@@ -595,10 +595,9 @@ class TradingOrchestrator:
             if num_positions < min_positions:
                 self._open_auto_trades(min_positions - num_positions, positions)
             
-            # Gestionar posiciones existentes
+            # Gestionar posiciones existentes (Arafura 2026: Delegado a OrderAgent)
             if positions:
-                for pos in positions:
-                    self._manage_position(pos)
+                self.order_agent.manage_trailing_stops()
             
             # CHECK PARA SYNC RÁPIDO DE ESTADÍSTICAS
             # Si teníamos más posiciones antes que ahora, significa que se cerró algo (manual o TP/SL)
@@ -677,83 +676,6 @@ class TradingOrchestrator:
                 self.storage.save_agent_log("OrderAgent", f"Auto {action} {symbol} FALLIDO",
                     f"Error: {order_result.error}", False, 0)
     
-    def _manage_position(self, pos):
-        """Gestiona una posición individual - trailing stop y break-even"""
-        try:
-            # pos es un diccionario, acceder con ['key']
-            symbol = pos['symbol']
-            ticket = pos['ticket']
-            pos_type = pos['type']
-            open_price = pos['open_price']
-            current_price = pos['current_price']
-            sl = pos['sl']
-            tp = pos['tp']
-            
-            symbol_info = self.mt5.get_symbol_info(symbol)
-            if not symbol_info:
-                return
-            
-            point = symbol_info.point
-            pip_value = point * 10
-            
-            # Calcular distancia en pips desde entrada
-            if pos_type == 0 or pos_type == "BUY":  # 0 = BUY en MT5
-                profit_pips = (current_price - open_price) / pip_value
-            else:
-                profit_pips = (open_price - current_price) / pip_value
-            
-            # Configuración de trailing (Ajuste 1: BE rápido)
-            trailing_activation_pips = 30  
-            trailing_distance_pips = 25    
-            breakeven_activation_pips = 10 # Break-even RÁPIDO (antes 20)
-            breakeven_buffer_pips = 2      
-            
-            # 1. Break-Even: Mover SL a entrada + buffer cuando profit > activación
-            if profit_pips >= breakeven_activation_pips:
-                if pos_type == 0 or pos_type == "BUY":
-                    new_sl = open_price + (breakeven_buffer_pips * pip_value)
-                    if sl < new_sl:
-                        success = self.order_agent.modify_position(ticket, new_sl, tp)
-                        if success:
-                            logger.info(f"  🔒 Break-even aplicado: #{ticket} SL → {new_sl:.5f}")
-                            self._log_position_management(ticket, "BREAKEVEN", new_sl)
-                else:
-                    new_sl = open_price - (breakeven_buffer_pips * pip_value)
-                    if sl == 0 or sl > new_sl:
-                        success = self.order_agent.modify_position(ticket, new_sl, tp)
-                        if success:
-                            logger.info(f"  🔒 Break-even aplicado: #{ticket} SL → {new_sl:.5f}")
-                            self._log_position_management(ticket, "BREAKEVEN", new_sl)
-            
-            # 2. Trailing Stop: Mover SL siguiendo el precio
-            if profit_pips >= trailing_activation_pips:
-                if pos_type == 0 or pos_type == "BUY":
-                    new_sl = current_price - (trailing_distance_pips * pip_value)
-                    if new_sl > sl:
-                        success = self.order_agent.modify_position(ticket, new_sl, tp)
-                        if success:
-                            logger.info(f"  📏 Trailing aplicado: #{ticket} SL → {new_sl:.5f}")
-                            self._log_position_management(ticket, "TRAILING", new_sl)
-                else:
-                    new_sl = current_price + (trailing_distance_pips * pip_value)
-                    if sl == 0 or new_sl < sl:
-                        success = self.order_agent.modify_position(ticket, new_sl, tp)
-                        if success:
-                            logger.info(f"  📏 Trailing aplicado: #{ticket} SL → {new_sl:.5f}")
-                            self._log_position_management(ticket, "TRAILING", new_sl)
-                            
-        except Exception as e:
-            logger.error(f"Error gestionando posición #{pos.get('ticket', '?')}: {e}")
-    
-    def _log_position_management(self, ticket: int, action: str, new_sl: float):
-        """Registra acción de gestión de posición"""
-        self.storage.save_agent_log(
-            agent_name="PositionManager",
-            action=f"{action} #{ticket}",
-            result=f"New SL: {new_sl:.5f}",
-            success=True,
-            execution_time=0
-        )
     
     def health_check_cycle(self):
         """Verifica salud de conexiones MT5 y Ollama"""

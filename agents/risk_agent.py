@@ -15,6 +15,12 @@ import json
 from .base_agent import BaseAgent, AgentResult
 from scraping.storage import get_storage
 
+try:
+    import MetaTrader5 as mt5
+    MT5_AVAILABLE = True
+except ImportError:
+    MT5_AVAILABLE = False
+
 
 class RiskStatus(Enum):
     """Estados de riesgo"""
@@ -305,15 +311,28 @@ class RiskAgent(BaseAgent):
             risk_score += 0.1
         
         # ═══════════════════════════════════════════════════════════
-        # CÁLCULO DE VOLUMEN AJUSTADO
+        # CÁLCULO DE VOLUMEN AJUSTADO (1% Risk Rule)
         # ═══════════════════════════════════════════════════════════
         if approved:
+            # Primero intentamos calcular volumen basado en riesgo real (1% rule)
+            # Usamos default_sl_pips para el cálculo base de riesgo
+            sl_to_use = self.default_sl_pips
+            
+            # calculate_position_size ahora es más inteligente y usa MT5 si está disponible
+            base_risk_volume = self.calculate_position_size(
+                balance=balance,
+                risk_pct=self.risk_per_trade_pct,
+                sl_pips=sl_to_use,
+                symbol=symbol
+            )
+            
+            # Aplicamos factores adicionales (fuerza de señal, streak, etc.) en _calculate_adjusted_volume
             adjusted_volume = self._calculate_adjusted_volume(
-                symbol, proposed_volume, signal_strength, balance, daily_loss_pct
+                symbol, base_risk_volume, signal_strength, balance, daily_loss_pct
             )
             
             if adjusted_volume < proposed_volume:
-                reasons.append(f"📉 Volumen reducido: {proposed_volume} → {adjusted_volume}")
+                reasons.append(f"📉 Volumen optimizado por riesgo: {proposed_volume} → {adjusted_volume}")
         else:
             adjusted_volume = 0
         
@@ -339,6 +358,10 @@ class RiskAgent(BaseAgent):
             else:
                 status = RiskStatus.NORMAL
         
+        # Factores para risk_budget_remaining
+        daily_fac = max(0, 1 - (daily_loss_pct / self.max_daily_loss_pct))
+        streak_fac = max(0.2, 1 - (self._streak_count * 0.25))
+        
         return RiskAssessment(
             approved=approved,
             max_volume=adjusted_volume,
@@ -347,7 +370,7 @@ class RiskAgent(BaseAgent):
             risk_score=round(risk_score, 2),
             reasons=reasons,
             status=status,
-            risk_budget_remaining=round(daily_factor * consecutive_factor, 2)
+            risk_budget_remaining=round(daily_fac * streak_fac, 2)
         )
     
     def _check_correlation(
@@ -380,38 +403,35 @@ class RiskAgent(BaseAgent):
     def _calculate_adjusted_volume(
         self,
         symbol: str,
-        proposed_volume: float,
+        base_volume: float,
         signal_strength: float,
         balance: float,
         daily_loss_pct: float
     ) -> float:
-        """Calcula volumen ajustado según riesgo"""
+        """Calcula volumen final ajustado por factores emocionales/mercado"""
         
-        # Base: riesgo por trade
-        max_risk_amount = balance * (self.risk_per_trade_pct / 100)
-        pip_value = 10 if "JPY" not in symbol else 0.1
-        max_volume_by_risk = max_risk_amount / (self.default_sl_pips * pip_value)
+        # Factor por fuerza de señal (0.7-1.0) - No queremos reducir demasiado si la señal es OK
+        signal_factor = 0.7 + (signal_strength * 0.3)
         
-        # Factor por fuerza de señal (0.5-1.0)
-        signal_factor = 0.5 + (signal_strength * 0.5)
-        
-        # Factor por pérdida diaria (reducir si hay pérdidas)
+        # Factor por pérdida diaria (reducir si hay pérdidas acumuladas)
         daily_factor = 1.0
         if daily_loss_pct > 0:
-            daily_factor = max(0.5, 1 - (daily_loss_pct / self.max_daily_loss_pct))
+            daily_factor = max(0.4, 1 - (daily_loss_pct / self.max_daily_loss_pct))
         
-        # Factor por pérdidas consecutivas (Streak Impact)
+        # Factor por pérdidas consecutivas (Streak Impact) - Penaliza fuertemente rachas malas
         consecutive_factor = 1.0
         if self._streak_count > 0:
-            consecutive_factor = max(0.3, 1 - (self._streak_count * 0.2))
+            consecutive_factor = max(0.2, 1 - (self._streak_count * 0.25))
         
-        adjusted = min(
-            proposed_volume,
-            max_volume_by_risk * signal_factor * daily_factor * consecutive_factor,
-            self.max_position_size
-        )
+        final_volume = base_volume * signal_factor * daily_factor * consecutive_factor
         
-        return round(max(adjusted, 0.01), 2)
+        # Ajustar a límites duros
+        adjusted = min(final_volume, self.max_position_size)
+        
+        # Redondear a 2 decimales y asegurar mínimo 0.01 si base_volume > 0
+        if base_volume > 0:
+            return round(max(adjusted, 0.01), 2)
+        return 0.0
     
     def _is_in_cooldown(self) -> bool:
         """Verifica si estamos en periodo de Cooldown"""
@@ -573,11 +593,56 @@ class RiskAgent(BaseAgent):
         sl_pips: float,
         symbol: str
     ) -> float:
-        """Calcula el tamaño de posición óptimo basado en riesgo"""
+        """
+        Calcula el tamaño de posición óptimo basado en riesgo (1% rule).
+        Utiliza datos reales de MT5 si están disponibles para determinar el valor del tick.
+        """
+        # Dinero real a arriesgar
         risk_amount = balance * (risk_pct / 100)
-        pip_value = 10 if "JPY" not in symbol else 1000 / 100
         
-        volume = risk_amount / (sl_pips * pip_value)
+        pip_value = 0.0
+        
+        if MT5_AVAILABLE and mt5.terminal_info() is not None:
+            try:
+                # Intentamos obtener el valor real por punto del broker
+                symbol_info = mt5.symbol_info(symbol)
+                if symbol_info:
+                    # tick_value es el profit en la moneda de la cuenta para 1 lote si el precio se mueve 1 tick
+                    # tick_size es el movimiento mínimo de precio
+                    # point es el movimiento mínimo de precio (suelen ser casi iguales)
+                    
+                    tick_value = symbol_info.trade_tick_value
+                    tick_size = symbol_info.trade_tick_size
+                    
+                    if tick_value and tick_size:
+                        # Calculamos valor de 1 pip (asumiendo 1 pip = 10 ticks en 5 dígitos)
+                        # O mejor, usamos directamente la distancia en ticks
+                        point = symbol_info.point
+                        distancia_en_puntos = sl_pips * (0.0001 / point if "JPY" not in symbol else 0.01 / point)
+                        
+                        # Valor de la pérdida por lote si se mueve sl_pips
+                        # (distancia / tick_size) * tick_value
+                        loss_per_lot = (distancia_en_puntos * point / tick_size) * tick_value
+                        
+                        if loss_per_lot > 0:
+                            pip_value = loss_per_lot  # Esto es el loss sumado por 1 lote completo
+                            volume = risk_amount / pip_value
+                            logger.debug(f"Cálculo MT5 para {symbol}: Risk=${risk_amount}, SL={sl_pips} pips, Loss/Lot=${loss_per_lot:.2f}")
+                            return round(min(volume, self.max_position_size), 2)
+            except Exception as e:
+                logger.warning(f"Error calculando volumen con MT5: {e}. Usando fallback.")
+
+        # FALLBACK: Cálculos genéricos si MT5 no está disponible o falla
+        # Asunción: 1 lote estándar = 100,000 unidades. 1 pip EURUSD = $10. 1 pip JPY = $7-10 approx.
+        if "JPY" in symbol:
+            # Para JPY, 0.01 es un pip. En una cuenta USD, 1 lote = 100k. 
+            # 0.01 * 100,000 = 1,000 JPY. Si USDJPY = 150, 1000 JPY = $6.66
+            generic_pip_value_per_lot = 7.0 
+        else:
+            # Pares estándar (EURUSD, GBPUSD, etc.) 1 pip = $10 por lote
+            generic_pip_value_per_lot = 10.0
+            
+        volume = risk_amount / (sl_pips * generic_pip_value_per_lot)
         volume = round(min(volume, self.max_position_size), 2)
         volume = max(volume, 0.01)
         

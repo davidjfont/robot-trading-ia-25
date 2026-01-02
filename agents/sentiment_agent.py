@@ -132,13 +132,30 @@ class SentimentAgent(BaseAgent):
         quote_currency = symbol[3:6].upper() if len(symbol) >= 6 else ""
         
         # Filtrar textos relevantes al símbolo
-        relevant_texts = []
-        for text in texts:
-            text_upper = text.upper()
-            if base_currency in text_upper or quote_currency in text_upper or symbol.upper() in text_upper:
-                relevant_texts.append(text)
+        relevant = []
+        aliases = [base_currency, symbol.upper()]
         
-        if not relevant_texts:
+        # Diccionario de alias comunes por moneda para mejorar filtrado
+        currency_aliases = {
+            "EUR": ["EURO", "EUROZONE", "BCE", "ECB"],
+            "USD": ["DOLLAR", "FED", "FOMC", "TREASURY"],
+            "GBP": ["POUND", "STERLING", "BOE"],
+            "JPY": ["YEN", "BOJ"],
+            "GOLD": ["XAU", "ORO"],
+            "OIL": ["WTI", "BRENT", "CRUDO"]
+        }
+        
+        if base_currency in currency_aliases:
+            aliases.extend(currency_aliases[base_currency])
+        if quote_currency in currency_aliases:
+            aliases.extend(currency_aliases[quote_currency])
+            
+        for text in texts:
+            text_u = text.upper()
+            if any(alias in text_u for alias in aliases):
+                relevant.append(text)
+        
+        if not relevant:
             return {
                 "symbol": symbol,
                 "sentiment": "neutral",

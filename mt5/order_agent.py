@@ -222,6 +222,77 @@ class OrderAgent(BaseAgent):
         
         return self.connector.modify_position(ticket, sl, tp)
 
+    def manage_trailing_stops(self, symbol: Optional[str] = None):
+        """
+        Monitorea y aplica Trailing Stop / Break-Even a las posiciones abiertas.
+        Centraliza la lógica que antes estaba en run.py para mayor modularidad.
+        """
+        if not self.connector.ensure_connected():
+            return
+            
+        positions = self.connector.get_positions(symbol)
+        if not positions:
+            return
+            
+        for pos in positions:
+            try:
+                ticket = pos.ticket
+                symbol = pos.symbol
+                pos_type = pos.type
+                open_price = pos.open_price
+                current_price = pos.current_price
+                sl = pos.sl
+                tp = pos.tp
+                
+                symbol_info = self.connector.get_symbol_info(symbol)
+                if not symbol_info:
+                    continue
+                
+                point = symbol_info.point
+                pip_value = point * 10
+                
+                # Calcular distancia en pips desde entrada
+                if pos_type == 0 or pos_type == "BUY":  # 0 = BUY en MT5
+                    profit_pips = (current_price - open_price) / pip_value
+                else:  # 1 = SELL en MT5
+                    profit_pips = (open_price - current_price) / pip_value
+                
+                # Configuración de trailing (Arafura 2026 Strategy)
+                # Estos valores podrían venir de la config en el futuro
+                trailing_activation_pips = 30  
+                trailing_distance_pips = 25    
+                breakeven_activation_pips = 10 
+                breakeven_buffer_pips = 2      
+                
+                # 1. Break-Even: Mover SL a entrada + buffer
+                if profit_pips >= breakeven_activation_pips:
+                    if pos_type == 0 or pos_type == "BUY":
+                        new_sl = open_price + (breakeven_buffer_pips * pip_value)
+                        if sl < new_sl:
+                            if self.connector.modify_position(ticket, new_sl, tp):
+                                logger.info(f"🔒 [BE] #{ticket} {symbol} protegido a {new_sl:.5f}")
+                    else:
+                        new_sl = open_price - (breakeven_buffer_pips * pip_value)
+                        if sl == 0 or sl > new_sl:
+                            if self.connector.modify_position(ticket, new_sl, tp):
+                                logger.info(f"🔒 [BE] #{ticket} {symbol} protegido a {new_sl:.5f}")
+                
+                # 2. Trailing Stop: Mover SL siguiendo el precio
+                if profit_pips >= trailing_activation_pips:
+                    if pos_type == 0 or pos_type == "BUY":
+                        new_sl = current_price - (trailing_distance_pips * pip_value)
+                        if new_sl > sl:
+                            if self.connector.modify_position(ticket, new_sl, tp):
+                                logger.info(f"📏 [Trailing] #{ticket} {symbol} SL subido a {new_sl:.5f}")
+                    else:
+                        new_sl = current_price + (trailing_distance_pips * pip_value)
+                        if sl == 0 or new_sl < sl:
+                            if self.connector.modify_position(ticket, new_sl, tp):
+                                logger.info(f"📏 [Trailing] #{ticket} {symbol} SL bajado a {new_sl:.5f}")
+                                
+            except Exception as e:
+                logger.error(f"Error gestionando trailing para #{pos.ticket}: {e}")
+
 
 if __name__ == "__main__":
     print("=" * 50)

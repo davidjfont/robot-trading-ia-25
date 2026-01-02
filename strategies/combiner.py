@@ -178,6 +178,19 @@ class MultiAgentCombiner:
             decision = self._majority_decision(votes)
         else:  # weighted
             decision = self._weighted_decision(votes, signal)
+            
+        # ═══════════════════════════════════════════════════════════
+        # NUEVA REGLA: SENTIMENT VETO
+        # ═══════════════════════════════════════════════════════════
+        tech_v = next((v for v in votes if v.agent_name == "TechnicalAgent"), None)
+        sent_v = next((v for v in votes if v.agent_name == "SentimentAgent"), None)
+        
+        if tech_v and sent_v and tech_v.vote != "HOLD" and sent_v.vote != "HOLD":
+            # Si el sentimiento es fuerte (>0.4) y opuesto a la técnica, forzamos HOLD
+            if sent_v.confidence > 0.4 and sent_v.vote != tech_v.vote:
+                logger.warning(f"🛡️ VETO DE SENTIMIENTO para {symbol}: Sentimiento {sent_v.vote} (conf: {sent_v.confidence:.2f}) se opone a Técnica {tech_v.vote}. Forzando HOLD.")
+                decision["action"] = "HOLD"
+                decision["reasons"] = [f"Veto de sentimiento: {sent_v.reason}"]
         
         # Aplicar filtro de riesgo si está disponible
         if risk_result and not risk_result.get("approved", True):
@@ -249,6 +262,10 @@ class MultiAgentCombiner:
         for v in votes:
             weight = self.agent_weights.get(v.agent_name, 0.33)
             
+            # Bonus de peso si el sentimiento es muy confiable
+            if v.agent_name == "SentimentAgent" and v.confidence > 0.6:
+                weight *= 1.5
+                
             if v.vote == "BUY":
                 vote_score = v.confidence
             elif v.vote == "SELL":
@@ -274,7 +291,7 @@ class MultiAgentCombiner:
         return {
             "action": action,
             "confidence": abs(final_score),
-            "unanimous": all(v.vote == action for v in votes)
+            "unanimous": all(v.vote == action for v in votes) if action != "HOLD" else False
         }
 
 

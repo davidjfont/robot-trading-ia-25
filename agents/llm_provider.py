@@ -175,6 +175,16 @@ class LLMProvider:
                 success=False,
                 error=str(e)
             )
+
+    def generate_neutral_fallback(self) -> Dict[str, Any]:
+        """Retorna un resultado neutral instantáneo para casos de error del LLM"""
+        return {
+            "sentiment": "neutral",
+            "score": 0.0,
+            "impact": "low",
+            "reason": "Neutral fallback (LLM Error/Timeout)",
+            "fallback": True
+        }
     
     def analyze_sentiment(self, text: str, context: str = "forex") -> Dict[str, Any]:
         """
@@ -248,14 +258,14 @@ Si no puedes determinar el sentimiento, responde neutral con score 0.""".format(
             except:
                 pass
                 
-            # Fallback final
+            # Fallback final: Búsqueda de palabras clave
             lower_content = response.content.lower()
-            if "bullish" in lower_content:
-                return {"sentiment": "bullish", "score": 0.5, "impact": "medium", "reason": response.content[:100]}
-            elif "bearish" in lower_content:
-                return {"sentiment": "bearish", "score": -0.5, "impact": "medium", "reason": response.content[:100]}
+            if any(w in lower_content for w in ["bullish", "positive", "subida", "fortalece"]):
+                return {"sentiment": "bullish", "score": 0.4, "impact": "low", "reason": "Keyword fallback (Bullish)"}
+            elif any(w in lower_content for w in ["bearish", "negative", "bajada", "debilita"]):
+                return {"sentiment": "bearish", "score": -0.4, "impact": "low", "reason": "Keyword fallback (Bearish)"}
             else:
-                return {"sentiment": "neutral", "score": 0.0, "impact": "low", "reason": response.content[:100]}
+                return self.generate_neutral_fallback()
     
     def extract_events(self, text: str) -> list:
         """
