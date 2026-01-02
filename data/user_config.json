@@ -1,8 +1,8 @@
 {
   "symbols": [
-    "EURUSD",
     "GOLD",
-    "GER40"
+    "GER40",
+    "EURUSD"
   ],
   "all_available_symbols": [
     "EURUSD",
@@ -22,7 +22,7 @@
     "[FTSE100]",
     "[IBEX35]"
   ],
-  "timeframe": "M15",
+  "timeframe": "H1",
   "max_risk_percent": 1,
   "max_positions": 5,
   "auto_refresh": true,
@@ -36,5 +36,5 @@
     "take_profit_pips": 6,
     "max_trade_duration_seconds": 120
   },
-  "last_updated": "2025-12-31T03:11:01.647527"
+  "last_updated": "2026-01-02T08:34:56.678681"
 }

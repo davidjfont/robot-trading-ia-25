@@ -72,8 +72,32 @@ def load_unified_config(config_path: str = "config.yaml") -> dict:
                 
                 # Mezclar parámetros principales
                 if 'symbols' in user_config:
+                    # La UI guarda una lista de strings: ["EURUSD", "GOLD"]
+                    # El bot espera una lista de dicts: [{"symbol": "EURUSD", "enabled": True, ...}]
+                    user_symbols = user_config['symbols']
+                    
+                    # 1. Mantener 'trading'->'symbols' original para compatibilidad de config_manager
                     config['trading'] = config.get('trading', {})
-                    config['trading']['symbols'] = user_config['symbols']
+                    config['trading']['symbols'] = user_symbols
+                    
+                    # 2. Inyectar en el 'symbols' principal del bot (lista de dicts)
+                    existing_symbols_configs = {s['symbol']: s for s in config.get('symbols', [])}
+                    new_symbols_config = []
+                    
+                    for sym in user_symbols:
+                        if sym in existing_symbols_configs:
+                            # Preservar config existente (max_lot, spread_max, etc.)
+                            new_symbols_config.append(existing_symbols_configs[sym])
+                        else:
+                            # Crear config por defecto para nuevo símbolo
+                            new_symbols_config.append({
+                                "symbol": sym,
+                                "enabled": True,
+                                "max_lot": 0.1,
+                                "spread_max": 25
+                            })
+                    
+                    config['symbols'] = new_symbols_config
                 
                 if 'max_risk_percent' in user_config:
                     val = user_config['max_risk_percent']
@@ -101,9 +125,11 @@ def load_unified_config(config_path: str = "config.yaml") -> dict:
                 if 'trading_mode' in user_config:
                     config['trading_mode'] = user_config['trading_mode']
                     
-                logger.info("✅ Configuración persistente cargada desde user_config.json")
+                logger.info(f"✅ Configuración persistente cargada: {len(config.get('symbols', []))} símbolos activos")
     except Exception as e:
         logger.warning(f"No se pudo cargar user_config.json (usando defaults): {e}")
+        import traceback
+        logger.debug(traceback.format_exc())
         
     return config
 
