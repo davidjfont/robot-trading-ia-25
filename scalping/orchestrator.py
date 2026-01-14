@@ -250,13 +250,21 @@ class ScalpingOrchestrator:
         # CAPA 1: CONTEXTO - ¿Se puede tradear?
         # ═══════════════════════════════════════════════════════════
         rates_m5 = self._get_rates(symbol, "M5", 50)
-        rates_m15 = self._get_rates(symbol, "M15", 50)
+        rates_h4 = self._get_rates(symbol, "H4", 50) # Nueva columna macro
+        
+        # Obtener experiencia de este símbolo
+        experience = self.learning_agent.get_symbol_experience(symbol)
+        logger.info(f"[Scalp] {symbol}: {experience.get('msg', 'Analiando memoria...')}")
         
         # Obtener spread actual para el filtro de contexto tóxico
         tick = self.mt5.get_tick(symbol)
         current_spread = (tick.ask - tick.bid) if tick else 0.0
         
-        context = self.context_agent.analyze(symbol, rates_m5, rates_m15, current_spread=current_spread)
+        context = self.context_agent.analyze(symbol, rates_m5, rates_h4=rates_h4, current_spread=current_spread)
+        
+        # Log de sesgo macro
+        if context.get('h4_bias'):
+            logger.info(f"[Scalp] {symbol}: Bias H4 {context['h4_bias']} (Strength: {context['h4_strength']:.2f})")
         
         # Pasar ATR actual al execution agent para sus cálculos de SL/TP
         self.execution_agent.config['last_atr'] = context.get('atr', 0.0005)
@@ -500,8 +508,12 @@ class ScalpingOrchestrator:
                         self.storage.update_snake_session(session.id, "COMPLETED", "NEUTRAL", 0, "Position closed manually or by SL/TP")
                         continue
                     
+                    # Obtener rates_m1 para análisis PPM si es necesario
+                    symbol = pos_data.get('symbol')
+                    rates_m1 = self._get_rates(symbol, "M1", 50) if symbol else None
+                    
                     # Evaluación del Snake Agent
-                    evaluation = self.snake_agent.evaluate(session, pos_data)
+                    evaluation = self.snake_agent.evaluate(session, pos_data, rates_m1=rates_m1)
                     
                     action = evaluation['action']
                     status = evaluation['status']

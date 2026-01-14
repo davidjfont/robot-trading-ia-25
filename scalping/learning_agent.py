@@ -43,6 +43,9 @@ class LearningAgent:
         # Patrones detectados
         self.patterns = []
         
+        # Cache de experiencia por símbolo
+        self.symbol_experience = {} # symbol -> stats
+        
         # Cargar datos históricos si existen
         self._load_historical_data()
     
@@ -167,6 +170,58 @@ class LearningAgent:
             'patterns': self.patterns[-10:],  # Últimos 10 patrones
             'recommendations': self.get_recommendations()
         }
+    
+    def get_symbol_experience(self, symbol: str) -> Dict[str, Any]:
+        """
+        Calcula la experiencia acumulada para un símbolo específico
+        """
+        if not self.storage:
+            return {'msg': "Memoria no disponible (sin storage)"}
+            
+        try:
+            # Intentar obtener de cache primero
+            if symbol in self.symbol_experience:
+                return self.symbol_experience[symbol]
+                
+            # Consultar historial filtrado por símbolo
+            results = self.storage.get_all_trade_results()
+            symbol_trades = [t for t in results if t.symbol == symbol]
+            
+            if not symbol_trades:
+                return {'msg': f"Sin experiencia previa en {symbol}"}
+                
+            # Calcular métricas básica
+            wins = [t for t in symbol_trades if t.profit > 0]
+            wr = len(wins) / len(symbol_trades)
+            total_profit = sum(t.profit for t in symbol_trades)
+            avg_profit = total_profit / len(symbol_trades)
+            
+            # Identificar mejor sesión
+            sessions = {'london': 0, 'ny': 0, 'asia': 0}
+            for t in symbol_trades:
+                hour = t.open_time.hour if t.open_time else 0
+                if 8 <= hour < 16: sessions['london'] += 1
+                elif 13 <= hour < 21: sessions['ny'] += 1
+                else: sessions['asia'] += 1
+                
+            best_session = max(sessions, key=sessions.get)
+            
+            exp = {
+                'total_trades': len(symbol_trades),
+                'win_rate': wr,
+                'total_profit': total_profit,
+                'avg_profit': avg_profit,
+                'best_session': best_session,
+                'msg': f"Exp en {symbol}: {len(symbol_trades)} trades, WR:{wr:.0%}, Mejor Sesión: {best_session}"
+            }
+            
+            # Guardar en cache
+            self.symbol_experience[symbol] = exp
+            return exp
+            
+        except Exception as e:
+            logger.error(f"Error calculando experiencia para {symbol}: {e}")
+            return {'msg': f"Error en memoria de {symbol}"}
     
     def _update_hourly_stats(self, hour: int, is_win: bool, profit: float):
         """Actualiza estadísticas por hora"""

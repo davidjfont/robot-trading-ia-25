@@ -1,7 +1,8 @@
 {
   "symbols": [
     "GOLD",
-    "EURUSD"
+    "SILVER",
+    "BRENT"
   ],
   "all_available_symbols": [
     "EURUSD",
@@ -35,5 +36,5 @@
     "take_profit_pips": 6,
     "max_trade_duration_seconds": 120
   },
-  "last_updated": "2026-01-02T19:42:57.027291"
+  "last_updated": "2026-01-13T04:27:55.617381"
 }

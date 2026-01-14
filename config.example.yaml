@@ -62,6 +62,16 @@ scraping:
   user_agents:
     - "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 
+# Escalado IA (Scalping)
+scalping:
+  enabled: true
+  impulses_mode: true  # Activado por defecto
+  ppm_enabled: true
+  swing_lookback: 50
+  zone_threshold_pct: 0.05
+  cycle_interval_seconds: 10
+  max_positions: 3
+
 # Estrategia
 strategy:
   timeframe: "M15"

@@ -5,6 +5,7 @@ El que manda - Observa precio en M1/M5, no indicadores
 
 from typing import Dict, Any, List
 from loguru import logger
+from .swing_detector import SwingDetector
 import numpy as np
 import pandas as pd
 
@@ -27,6 +28,11 @@ class MicrostructureAgent:
         self.min_velocity_threshold = 0.0002  # Movimiento mínimo por vela
         self.rejection_count_threshold = 2  # Mínimo rechazos para nivel
         self.intention_body_ratio = 0.7  # Cuerpo > 70% del rango
+        
+        # PPM Vision
+        self.ppm_enabled = self.config.get('ppm_enabled', True)
+        self.swing_detector = SwingDetector(lookback=self.config.get('swing_lookback', 50))
+        self.zone_threshold_pct = self.config.get('zone_threshold_pct', 0.05)
         
     def analyze(self, rates_m1: list, rates_m5: list) -> Dict[str, Any]:
         """
@@ -64,6 +70,19 @@ class MicrostructureAgent:
         # 6. 💿 ESTRATEGIA CARGADA: Arafura Scalper (MQL5 Logic)
         # Se ejecuta en paralelo y tiene prioridad si detecta señal
         arafura_signal = self._analyze_arafura_strategy(rates_m1)
+        
+        # 7. 🧠 PPM VISION: Proportional Movement Analysis
+        ppm_context = {}
+        if self.ppm_enabled:
+            ppm_context = self.swing_detector.detect_last_swing(rates_m1)
+            if ppm_context:
+                current_price = rates_m1[-1]['close']
+                ppm_zone = self._detect_ppm_zone(current_price, ppm_context)
+                if ppm_zone:
+                    logger.info(f"👀 [PPM] High-Intensity Observation: Price at {ppm_zone} zone")
+                    ppm_signal = self._analyze_ppm_behavior(rates_m1, ppm_zone, ppm_context)
+                    if ppm_signal['signal'] != 'NONE':
+                        return ppm_signal
         
         # Lógica de decisión
         signal = "NONE"
@@ -406,3 +425,56 @@ class MicrostructureAgent:
             logger.error(f"Error analizando estrategia Arafura: {e}")
             
         return {'signal': 'NONE', 'confidence': 0, 'reason': ''}
+
+    def _detect_ppm_zone(self, price: float, ppm_context: Dict) -> Optional[str]:
+        """Detecta si el precio está en una zona de decisión proporcional"""
+        levels = ppm_context.get('levels', {})
+        r_range = ppm_context.get('R', 0)
+        threshold = r_range * self.zone_threshold_pct
+        
+        for name, level in levels.items():
+            if abs(price - level) <= threshold:
+                return name
+        return None
+
+    def _analyze_ppm_behavior(self, rates: list, zone: str, context: Dict) -> Dict[str, Any]:
+        """Analiza el comportamiento micro en una zona PPM"""
+        current_rates = rates[-5:]
+        velocity, direction = self._analyze_velocity(current_rates)
+        
+        # Lógica simplificada de "Aceptación" vs "Rechazo"
+        # Si el momentum es fuerte hacia el nivel, es continuación (Acceptance)
+        # Si el momentum se debilita o hay mechas contrarias, es retroceso (Rejection)
+        
+        ppm_signal = "NONE"
+        reason = ""
+        
+        if zone == "0.5R":
+            # Si el precio llega a 0.5R y el momentum cae -> Retroceso
+            if velocity < self.min_velocity_threshold:
+                 # Retroceso probable
+                 ppm_signal = "SELL" if context['direction'] == "BULLISH" else "BUY"
+                 reason = "0.5R Zone: Momentum weakening (Retracement Scenario)"
+            else:
+                 reason = "0.5R Zone: Momentum holds (Continuation to 1.0R)"
+                 
+        elif zone == "1.0R":
+            # Equality Zone - High probability of reaction
+            if velocity < self.min_velocity_threshold:
+                ppm_signal = "SELL" if context['direction'] == "BULLISH" else "BUY"
+                reason = "1.0R Zone: High probability reaction (Equality Zone rejection)"
+            else:
+                reason = "1.0R Zone: Clean acceptance (Expansion potential to 2.0R)"
+                
+        elif zone == "2.0R":
+            # Expansion Zone - Mature move
+            ppm_signal = "SELL" if context['direction'] == "BULLISH" else "BUY"
+            reason = "2.0R Zone: Move statistically mature (Expansion Zone closure)"
+
+        return {
+            'signal': ppm_signal,
+            'confidence': 0.80 if ppm_signal != "NONE" else 0.0,
+            'entry_type': 'MARKET',
+            'reason': f"🧠 PPM: {reason}",
+            'ppm_zone': zone
+        }

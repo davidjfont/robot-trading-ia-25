@@ -6,7 +6,7 @@ Snake Agent - Temporal Outcome Control Loop
 from typing import Dict, Any, Optional
 from datetime import datetime
 from loguru import logger
-from enum import Enum
+from .swing_detector import SwingDetector
 import math
 
 class SnakeAction(Enum):
@@ -28,12 +28,15 @@ class SnakeAgent:
     Gestiona una orden viva dentro de una ventana temporal estricta.
     """
     
-    def __init__(self):
-        pass
+    def __init__(self, config: dict = None):
+        self.config = config or {}
+        self.swing_detector = SwingDetector(lookback=self.config.get('swing_lookback', 50))
+        self.zone_threshold_pct = self.config.get('zone_threshold_pct', 0.05)
 
-    def evaluate(self, session: Any, ticket_info: Dict[str, Any], market_data: Dict[str, Any] = None) -> Dict[str, Any]:
+    def evaluate(self, session: Any, ticket_info: Dict[str, Any], market_data: Dict[str, Any] = None, rates_m1: list = None) -> Dict[str, Any]:
         """
         Evalúa el estado de una sesión activa (Hypothesis Validation Logic).
+        Ahora incluye análisis PPM (Price Proportional Movement).
         """
         
         # 1. Datos temporales
@@ -105,7 +108,44 @@ class SnakeAgent:
             # The user asked: "Snake Agent deveria reiniciarse al acabar el ciclo".
             # So waiting for expiry is best.
             
-            elif time_progress > 0.8:
+            # 4. 🧠 PPM VISION: Probabilistic Exit Management
+            # -----------------------------------------------
+            if rates_m1:
+                ppm_context = self.swing_detector.detect_last_swing(rates_m1)
+                if ppm_context:
+                    ppm_zone = self._detect_ppm_zone(current_price, ppm_context)
+                    if ppm_zone:
+                        # Analizar comportamiento en zona
+                        # Usamos velocidad para decidir aceptación/rechazo
+                        current_velocity = velocity
+                        
+                        if ppm_zone == "0.5R":
+                            if current_velocity < 0.01: # Velocidad baja en 0.5R
+                                return {
+                                    "action": SnakeAction.PROTECT,
+                                    "status": SnakeStatus.WEAK,
+                                    "reason": "🧠 PPM 0.5R: Momentum Weakening (Protecting Partial)",
+                                    "confidence": 0.85
+                                }
+                        elif ppm_zone == "1.0R":
+                            if current_velocity < 0.02: # Reacción probable en igualdad
+                                return {
+                                    "action": SnakeAction.CLOSE,
+                                    "status": SnakeStatus.VALID,
+                                    "reason": "🧠 PPM 1.0R: Equality zone reached (Probabilistic Closure)",
+                                    "confidence": 0.95
+                                }
+                            else:
+                                reason = "🧠 PPM 1.0R: Expansion persistence (Trailing to 2.0R)"
+                        elif ppm_zone == "2.0R":
+                             return {
+                                "action": SnakeAction.CLOSE,
+                                "status": SnakeStatus.VALID,
+                                "reason": "🧠 PPM 2.0R: Expansion limit reached (Full Exit)",
+                                "confidence": 1.0
+                            }
+
+            if time_progress > 0.8:
                 # Instead of closing, we just wait for expiry to RELEASE.
                 # Or we can RELEASE early if it's very good.
                 action = SnakeAction.HOLD # Let it reach expiry for RELEASE
@@ -147,9 +187,20 @@ class SnakeAgent:
             "stats": {
                 "velocity": velocity,
                 "remaining": remaining_seconds,
-                "profit": current_profit
+                 "profit": current_profit
             }
         }
+
+    def _detect_ppm_zone(self, price: float, ppm_context: Dict) -> Optional[str]:
+        """Detecta si el precio está en una zona de decisión proporcional"""
+        levels = ppm_context.get('levels', {})
+        r_range = ppm_context.get('R', 0)
+        threshold = r_range * self.zone_threshold_pct
+        
+        for name, level in levels.items():
+            if abs(price - level) <= threshold:
+                return name
+        return None
 
     def _decide_on_expiry(self, current_profit: float, pips_diff: float) -> Dict[str, Any]:
         """Decisión cuando el tiempo se ha agotado"""

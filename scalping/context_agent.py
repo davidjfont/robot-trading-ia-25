@@ -30,9 +30,16 @@ class ContextAgent:
         }
         self.min_atr_threshold = self.config.get('min_atr_threshold', 0.0005)
         
-    def analyze(self, symbol: str, rates_m5: list, rates_m15: list = None, current_spread: float = 0.0) -> Dict[str, Any]:
+    def analyze(self, symbol: str, rates_m5: list, rates_h4: list = None, rates_m15: list = None, current_spread: float = 0.0) -> Dict[str, Any]:
         """
         Analiza el contexto actual para decidir si tradear
+        
+        Args:
+            symbol: Símbolo a analizar
+            rates_m5: Velas M5 para análisis micro
+            rates_h4: Velas H4 para análisis macro (contexto principal)
+            rates_m15: Velas M15 adicionales
+            current_spread: Spread actual del símbolo
         
         Returns:
             {
@@ -54,6 +61,9 @@ class ContextAgent:
         
         # 3. Clasificar estado del mercado
         market_state, state_confidence = self._classify_market_state(rates_m5)
+        
+        # 3.b Analizar Contexto H4 (Macro)
+        h4_context = self._analyze_h4_context(rates_h4) if rates_h4 else {'bias': 'NEUTRAL', 'strength': 0.0}
         
         # 4. Verificar contexto tóxico (Expert rule)
         is_toxic = self.is_toxic(symbol, current_spread, rates_m5)
@@ -89,10 +99,12 @@ class ContextAgent:
             'can_trade': can_trade,
             'market_state': market_state,
             'state_confidence': state_confidence,
+            'h4_bias': h4_context['bias'],
+            'h4_strength': h4_context['strength'],
             'session': session,
             'atr': atr,
             'is_toxic': is_toxic,
-            'reasons': reasons if not can_trade else ["Contexto favorable para scalping"]
+            'reasons': reasons if not can_trade else [f"Contexto favorable (H4 {h4_context['bias']})"]
         }
         
         logger.debug(f"[ContextAgent] {symbol}: {market_state} | ATR:{atr:.5f} | Session:{session} | Toxic:{is_toxic} | Trade:{can_trade}")
@@ -128,6 +140,39 @@ class ContextAgent:
              return True
              
         return False
+    
+    def _analyze_h4_context(self, rates: list) -> Dict[str, Any]:
+        """
+        Analiza las velas H4 para determinar la tendencia macro.
+        """
+        if not rates or len(rates) < 20:
+            return {'bias': 'NEUTRAL', 'strength': 0.0, 'reason': 'Insuficientes datos H4'}
+            
+        closes = [r['close'] for r in rates[-20:]]
+        highs = [r['high'] for r in rates[-20:]]
+        lows = [r['low'] for r in rates[-20:]]
+        
+        # EMAs rápidas vs lentas en H4
+        ema9 = np.mean(closes[-9:])
+        ema20 = np.mean(closes[-20:])
+        
+        # Dirección
+        if ema9 > ema20 and closes[-1] > ema9:
+            bias = "BULLISH"
+        elif ema9 < ema20 and closes[-1] < ema9:
+            bias = "BEARISH"
+        else:
+            bias = "NEUTRAL"
+            
+        # Fuerza (Distancia entre EMAs)
+        strength = abs(ema9 - ema20) / (ema20 + 0.000001) * 1000
+        
+        return {
+            'bias': bias,
+            'strength': min(1.0, strength),
+            'ema9': ema9,
+            'ema20': ema20
+        }
     
     def _get_current_session(self) -> str:
         """Detecta la sesión de trading actual"""

@@ -49,7 +49,7 @@ def start_dashboard():
     threading.Thread(target=open_browser, daemon=True).start()
     
     # Iniciar streamlit en un proceso separado (en segundo plano si estamos en modo ALL)
-    return subprocess.Popen([VENV_STREAMLIT, "run", "ui/dashboard.py"], 
+    return subprocess.Popen([VENV_STREAMLIT, "run", "ui/dashboard.py", "--server.headless", "true"], 
                             cwd=BASE_DIR, 
                             creationflags=subprocess.CREATE_NEW_CONSOLE)
 
